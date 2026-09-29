@@ -32,7 +32,14 @@ export interface BlockWithoutDetail {
     block_header: BlockHeader;
 }
 
-export interface GetTransactionResponse extends Omit<SignedTransaction, 'visible'> {
+export interface GetTransactionResponse extends Omit<SignedTransaction, 'visible' | 'signature'> {
+    /**
+     * Absent on a pure-PQ transaction: it is authorized by `pq_auth_sig`
+     * alone and the node omits the empty `signature` list entirely (observed
+     * on every PQ transaction in `test/fixtures/pq-onchain-transactions.json`).
+     * Present, possibly alongside `pq_auth_sig`, whenever ECDSA signed.
+     */
+    signature?: string[];
     visible?: boolean;
     ret: [
         {
