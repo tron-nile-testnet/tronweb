@@ -2464,6 +2464,9 @@ export class TransactionBuilder {
                     }
                 );
                 (tx as SignedTransaction<T>).signature = (transaction as SignedTransaction<T>).signature;
+                if ((transaction as SignedTransaction<T>).pq_auth_sig) {
+                    (tx as SignedTransaction<T>).pq_auth_sig = (transaction as SignedTransaction<T>).pq_auth_sig;
+                }
                 tx.visible = transaction.visible;
                 return tx as U;
             } catch (e) {
@@ -2493,7 +2496,10 @@ export class TransactionBuilder {
     async alterTransaction<T extends Transaction>(transaction: T, options: AlterTransactionOptions = {}) {
         transaction = cloneTransaction(transaction);
 
-        if (Reflect.has(transaction, 'signature')) throw new Error('You can not extend the expiration of a signed transaction.');
+        // A PQ-signed transaction carries pq_auth_sig without a signature key;
+        // altering raw_data changes the txID and would silently invalidate it.
+        if (Reflect.has(transaction, 'signature') || (transaction as { pq_auth_sig?: unknown[] }).pq_auth_sig?.length)
+            throw new Error('You can not extend the expiration of a signed transaction.');
 
         if (options.data) {
             if (options.dataFormat !== 'hex' && !/^0x/.test(options.data)) options.data = TronWeb.fromUtf8(options.data);

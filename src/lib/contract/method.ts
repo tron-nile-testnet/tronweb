@@ -290,7 +290,7 @@ export class Method<AbiFrag extends Readonly<AbiFragmentNoErrConstructor>> {
         // If privateKey is false, this won't be signed here. We assume sign functionality will be replaced.
         const signedTransaction = await this.tronWeb.trx.sign(transaction.transaction, privateKey);
 
-        if (!signedTransaction.signature) {
+        if (!signedTransaction.signature && !signedTransaction.pq_auth_sig?.length) {
             if (!privateKey) {
                 throw new Error('Transaction was not signed properly');
             }

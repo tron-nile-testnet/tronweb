@@ -22,6 +22,10 @@ const DEFAULT_VERSION = '4.8.2';
 
 const FEE_LIMIT = 150000000;
 
+// Kept as the plain release version on purpose: plugin gating runs
+// `semver.satisfies(TronWeb.version, requires)`, and a prerelease build
+// number (see package.json during QA rounds) would fail every `^6.x`
+// range a plugin declares.
 const version = '6.5.1';
 
 function isValidOptions(options: unknown): options is TronWebOptions {

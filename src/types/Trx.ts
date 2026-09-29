@@ -1,5 +1,5 @@
 import { AccountType } from './Contract.js';
-import { SignedTransaction, Transaction } from './Transaction.js';
+import { AnySignedTransaction, Transaction } from './Transaction.js';
 import { Resource } from './TransactionBuilder.js';
 import { APIReturnedPermission } from './APIResponse.js';
 
@@ -171,7 +171,7 @@ export interface TransactionSignWeight {
     transaction: { transaction: Transaction };
 }
 
-export interface BroadcastReturn<T extends SignedTransaction> {
+export interface BroadcastReturn<T extends AnySignedTransaction> {
     result: boolean;
     txid: string;
     code: string;
@@ -211,7 +211,12 @@ export interface Proposal {
 
 export interface ChainParameter {
     key: string;
-    value: number;
+    /**
+     * Absent when the parameter has never been set by a governance proposal —
+     * the node omits the field rather than sending 0. Treat a missing value as
+     * "not activated" (observed on Nile for `getAllowMlDsa44`).
+     */
+    value?: number;
 }
 
 export interface AccountResourceMessage {

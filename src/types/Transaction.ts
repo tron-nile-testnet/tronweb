@@ -1,4 +1,5 @@
 import { ContractParamter, ContractType, CreateSmartContract, TriggerSmartContract } from './Contract.js';
+import { PQAuthSig } from './PQ.js';
 
 export interface ContractParamterWrapper<T = ContractParamter> {
     value: T;
@@ -66,5 +67,24 @@ export interface TransactionWrapper {
 
 export interface SignedTransaction<T extends ContractParamter = ContractParamter> extends Transaction<T> {
     signature: string[];
+    /** Present when the transaction (also) carries post-quantum signatures. */
+    pq_auth_sig?: PQAuthSig[];
     contract_address?: string;
 }
+
+/**
+ * A transaction authorized by post-quantum signatures. `signature` is
+ * optional: a pure-PQ transaction has no ECDSA signatures at all, while a
+ * mixed multisig carries both fields (their weights sum against the same
+ * permission threshold).
+ */
+export interface PQSignedTransaction<T extends ContractParamter = ContractParamter> extends Transaction<T> {
+    pq_auth_sig: PQAuthSig[];
+    signature?: string[];
+    contract_address?: string;
+}
+
+/** Any transaction the node will accept as signed. */
+export type AnySignedTransaction<T extends ContractParamter = ContractParamter> =
+    | SignedTransaction<T>
+    | PQSignedTransaction<T>;

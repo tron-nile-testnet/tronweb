@@ -7,9 +7,10 @@ import { AbstractTrx } from './AbstractTrx.js';
 import { RawTrx } from './RawTrx.js';
 import { txCheck, txCheckWithArgs } from '../../utils/transaction.js';
 import { cloneTransaction } from '../../utils/clone.js';
-import { ecRecover } from '../../utils/crypto.js';
+import { ecRecover, pqPublicKeyToAddress } from '../../utils/crypto.js';
 import { BroadcastReturn, AddressOptions, BroadcastHexReturn, Address } from '../../types/Trx.js';
-import { SignedTransaction, Transaction } from '../../types/Transaction.js';
+import { AnySignedTransaction, PQSignedTransaction, SignedTransaction, Transaction } from '../../types/Transaction.js';
+import { TronPQSigner, isTronPQSigner } from '../../types/PQ.js';
 import { TypedDataDomain, TypedDataField } from '../../utils/typedData.js';
 import { Resource } from '../../types/TransactionBuilder.js';
 
@@ -60,17 +61,57 @@ export class Trx extends AbstractTrx<false> {
             throw new Error('Invalid transaction');
         }
         if (!tx.signature?.length) {
+            if (tx.pq_auth_sig?.length) {
+                throw new Error(
+                    'Transaction is signed with post-quantum signatures; ECDSA recovery does not apply. ' +
+                        'Use getPQSignerAddresses instead.'
+                );
+            }
             throw new Error('Transaction is not signed');
         }
         const txID = tx.txID;
-        if (tx.signature.length === 1) {
+        // Mixed multisig: PQ co-signers are part of the signer set, so a
+        // recovery that listed only the ECDSA participants would misreport
+        // the transaction as under-signed.
+        const pqAddresses = (tx.pq_auth_sig ?? []).map((entry) =>
+            TronWeb.address.fromHex(pqPublicKeyToAddress(entry.public_key, entry.scheme))
+        );
+        if (tx.signature.length === 1 && !pqAddresses.length) {
             const tronAddress = ecRecover(txID, tx.signature[0]);
             return TronWeb.address.fromHex(tronAddress);
         }
-        return tx.signature.map((sig) => {
-            const tronAddress = ecRecover(txID, sig);
-            return TronWeb.address.fromHex(tronAddress);
-        });
+        return [
+            ...tx.signature.map((sig) => {
+                const tronAddress = ecRecover(txID, sig);
+                return TronWeb.address.fromHex(tronAddress);
+            }),
+            ...pqAddresses,
+        ];
+    }
+
+    getPQSignerAddresses(transaction: PQSignedTransaction): Address[] {
+        return Trx.getPQSignerAddresses(transaction);
+    }
+
+    /**
+     * Derive the signer addresses of a PQ-signed transaction from the public
+     * keys embedded in its `pq_auth_sig` entries. PQ schemes have no
+     * ecrecover-style primitive, but none is needed — the full public key
+     * travels with the signature. Note this derives, it does not verify: use
+     * `verifyPQTransaction` from `tronweb/pq` to check the signatures.
+     */
+    static getPQSignerAddresses(transaction: PQSignedTransaction): Address[] {
+        const tx = cloneTransaction(transaction);
+        if (!txCheck(tx)) {
+            throw new Error('Invalid transaction');
+        }
+        if (!tx.pq_auth_sig?.length) {
+            throw new Error('Transaction has no pq_auth_sig entries');
+        }
+        // Scheme-strict, as the node is: an entry whose key is the other
+        // scheme's size throws here instead of listing a signer the node
+        // would reject ("public key or signature length mismatch").
+        return tx.pq_auth_sig.map((entry) => TronWeb.address.fromHex(pqPublicKeyToAddress(entry.public_key, entry.scheme)));
     }
 
     async verifyMessage(message: string, signature: string, address = this.tronWeb.defaultAddress.base58, useTronHeader = true) {
@@ -139,12 +180,27 @@ export class Trx extends AbstractTrx<false> {
 
     async sign<T extends SignedTransaction | Transaction | string>(
         transaction: T,
-        privateKey = this.tronWeb.defaultPrivateKey,
+        privateKey?: string | false,
+        useTronHeader?: boolean,
+        multisig?: boolean
+    ): Promise<SignedStringOrSignedTransaction<T>>;
+    async sign<T extends SignedTransaction | Transaction>(
+        transaction: T,
+        signer: TronPQSigner,
+        useTronHeader?: boolean,
+        multisig?: boolean
+    ): Promise<PQSignedTransaction & T>;
+    async sign<T extends SignedTransaction | Transaction | string>(
+        transaction: T,
+        privateKey: string | false | TronPQSigner = this.tronWeb.defaultPrivateKey,
         useTronHeader = true,
         multisig = false
-    ): Promise<SignedStringOrSignedTransaction<T>> {
+    ): Promise<SignedStringOrSignedTransaction<T> | (PQSignedTransaction & T)> {
         // Message signing
         if (utils.isString(transaction)) {
+            if (isTronPQSigner(privateKey)) {
+                throw new Error('PQ signers can only sign transactions; message signing has no PQ protocol support');
+            }
             if (!utils.isHex(transaction)) {
                 throw new Error('Expected hex message input');
             }
@@ -158,12 +214,14 @@ export class Trx extends AbstractTrx<false> {
 
         const tx = cloneTransaction(transaction as Transaction | SignedTransaction);
 
-        if (!multisig && (tx as SignedTransaction).signature) {
+        if (!multisig && ((tx as SignedTransaction).signature || (tx as PQSignedTransaction).pq_auth_sig?.length)) {
             throw new Error('Transaction is already signed');
         }
 
         if (!multisig) {
-            const address = toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
+            const address = isTronPQSigner(privateKey)
+                ? toHex(privateKey.address).toLowerCase()
+                : toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
 
             if (address !== toHex(tx.raw_data.contract[0].parameter.value.owner_address)) {
                 throw new Error('Private key does not match address in transaction');
@@ -174,7 +232,35 @@ export class Trx extends AbstractTrx<false> {
             throw new Error('Invalid transaction');
         }
 
+        if (isTronPQSigner(privateKey)) {
+            const signature = await privateKey.signDigest(tx.txID);
+            return utils.crypto.attachPQAuthSig(tx, {
+                scheme: privateKey.scheme,
+                public_key: privateKey.publicKey,
+                signature,
+            }) as PQSignedTransaction & T;
+        }
+
         return utils.crypto.signTransaction(privateKey as string, tx) as SignedStringOrSignedTransaction<T>;
+    }
+
+    /**
+     * Dedicated post-quantum signing entry point — `sign()` restricted to a
+     * `TronPQSigner`. Exists for discoverability and misuse resistance: a
+     * private-key string here is a compile-time AND runtime error, so a PQ
+     * call site can never silently fall back to ECDSA.
+     */
+    async signPQ<T extends SignedTransaction | Transaction>(
+        transaction: T,
+        signer: TronPQSigner,
+        multisig = false
+    ): Promise<PQSignedTransaction & T> {
+        if (!isTronPQSigner(signer)) {
+            throw new Error(
+                'signPQ requires a TronPQSigner (see createPQSigner in tronweb/pq); to sign with a private key use sign()'
+            );
+        }
+        return this.sign(transaction, signer, true, multisig);
     }
 
     static signString(message: string, privateKey: string, useTronHeader = true) {
@@ -244,7 +330,13 @@ export class Trx extends AbstractTrx<false> {
         return utils.typedData.signTypedData(domain, types, value, privateKey);
     }
 
-    async multiSign(transaction: Transaction, privateKey = this.tronWeb.defaultPrivateKey, permissionId = 0) {
+    async multiSign(transaction: Transaction, privateKey?: string | false, permissionId?: number): Promise<SignedTransaction>;
+    async multiSign(transaction: Transaction, signer: TronPQSigner, permissionId?: number): Promise<PQSignedTransaction>;
+    async multiSign(
+        transaction: Transaction,
+        privateKey: string | false | TronPQSigner = this.tronWeb.defaultPrivateKey,
+        permissionId = 0
+    ): Promise<SignedTransaction | PQSignedTransaction> {
         if (!utils.isObject(transaction)) {
             throw new Error('Invalid transaction provided');
         }
@@ -261,8 +353,11 @@ export class Trx extends AbstractTrx<false> {
             // set permission id
             transaction.raw_data.contract[0].Permission_id = permissionId;
 
-            // check if private key insides permission list
-            const address = toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
+            // check if the signing key is inside the permission list. PQ signers
+            // appear there by their derived address, same as ECDSA keys.
+            const address = isTronPQSigner(privateKey)
+                ? toHex(privateKey.address).toLowerCase()
+                : toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
             const signWeight = await this.getSignWeight(transaction, permissionId);
 
             if (signWeight.result.code === 'PERMISSION_ERROR') {
@@ -330,15 +425,27 @@ export class Trx extends AbstractTrx<false> {
         if (!txCheck(transaction)) {
             throw new Error('Invalid transaction');
         }
+        if (isTronPQSigner(privateKey)) {
+            const signature = await privateKey.signDigest(transaction.txID);
+            return utils.crypto.attachPQAuthSig(transaction as PQSignedTransaction, {
+                scheme: privateKey.scheme,
+                public_key: privateKey.publicKey,
+                signature,
+            });
+        }
         return utils.crypto.signTransaction(privateKey as string, transaction);
     }
 
-    async sendRawTransaction<T extends SignedTransaction>(signedTransaction: T): Promise<BroadcastReturn<T>> {
+    async sendRawTransaction<T extends AnySignedTransaction>(signedTransaction: T): Promise<BroadcastReturn<T>> {
         if (!utils.isObject(signedTransaction)) {
             throw new Error('Invalid transaction provided');
         }
 
-        if (!signedTransaction.signature || !utils.isArray(signedTransaction.signature)) {
+        // Both fields use the same rule: an empty array is unsigned (the node
+        // rejects it as "miss sig or contract").
+        const hasEcdsaSignatures = utils.isArray(signedTransaction.signature) && signedTransaction.signature.length > 0;
+        const hasPQSignatures = utils.isArray(signedTransaction.pq_auth_sig) && signedTransaction.pq_auth_sig.length > 0;
+        if (!hasEcdsaSignatures && !hasPQSignatures) {
             throw new Error('Transaction is not signed');
         }
 

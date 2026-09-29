@@ -6,6 +6,7 @@ import { byte2hexStr, byteArray2hexStr } from './bytes.js';
 import { keccak256, sha256, recoverAddress, arrayify, Signature } from './ethersUtils.js';
 import { secp256k1 as secp } from 'ethereum-cryptography/secp256k1';
 import { SignedTransaction } from '../types/Transaction.js';
+import { PQAuthSig, PQSchemeName, PQ_PUBLIC_KEY_SIZES, PQ_SIGNATURE_HEADERS, PQ_SIGNATURE_SIZES } from '../types/PQ.js';
 
 import type { BytesLike } from '../types/UtilsTypes.js';
 
@@ -70,6 +71,144 @@ export function signTransaction(priKeyBytes: string | BytesLike, transaction: an
         );
         if (!alreadySigned) transaction.signature.push(signature);
     } else transaction.signature = [signature];
+    return transaction;
+}
+
+/**
+ * Derive the 21-byte TRON address hex from a PQ public key:
+ * `0x41 ‖ Keccak-256(public_key)[12..32]`. The input must already be the
+ * on-chain form (896 B for Falcon-512 — framing header stripped; 1312 B for
+ * ML-DSA-44); hashing any other length silently yields an unrelated,
+ * unspendable address, so the length is enforced here. Pass `scheme` when
+ * the key comes with one (a `pq_auth_sig` entry): the node is scheme-strict
+ * ("public key or signature length mismatch"), so an FN_DSA_512 entry
+ * carrying a 1312-byte key must not derive an address it would never credit.
+ */
+export function pqPublicKeyToAddress(publicKey: string | Uint8Array, scheme?: PQSchemeName): string {
+    // Wire data can arrive with the field missing entirely; a bare TypeError
+    // from `bytes.length` below would give the caller nothing to go on.
+    if (typeof publicKey !== 'string' && !(publicKey instanceof Uint8Array)) {
+        throw new Error('Invalid PQ public key: expected a hex string or Uint8Array');
+    }
+    let bytes: Uint8Array;
+    if (typeof publicKey === 'string') {
+        const clean = publicKey.replace(/^0x/i, '');
+        // hexStr2byteArray silently drops a dangling nibble; reject instead —
+        // deriving an address from malformed hex must fail, not "round down".
+        if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
+            throw new Error('Invalid PQ public key: not a valid hex string');
+        }
+        bytes = new Uint8Array(hexStr2byteArray(clean));
+    } else {
+        bytes = publicKey;
+    }
+    let valid: number[];
+    if (scheme !== undefined) {
+        const size = PQ_PUBLIC_KEY_SIZES[scheme];
+        if (!size) {
+            throw new Error(`Invalid PQ public key: unknown scheme ${String(scheme)}`);
+        }
+        valid = [size];
+    } else {
+        valid = Object.values(PQ_PUBLIC_KEY_SIZES);
+    }
+    if (!valid.includes(bytes.length)) {
+        const expected = valid.length > 1 ? `one of ${valid.join(', ')}` : String(valid[0]);
+        throw new Error(`Invalid ${scheme ?? 'PQ'} public key length ${bytes.length}; expected ${expected} bytes`);
+    }
+    const hash = keccak256(bytes).replace(/^0x/, '');
+    return ADDRESS_PREFIX + hash.substring(24);
+}
+
+/**
+ * Attach a PQ signature entry to `transaction.pq_auth_sig`, mirroring what
+ * `signTransaction` does for `transaction.signature`. Deduplicates by
+ * (scheme, public_key) — NOT by signature bytes: Falcon signing is
+ * randomized, so the same key legitimately produces different bytes on every
+ * run, and only key identity marks a duplicate signer.
+ */
+export function attachPQAuthSig<T extends object>(transaction: T, entry: PQAuthSig): T {
+    const container = transaction as { pq_auth_sig?: PQAuthSig[] };
+    // `createPQSigner` output always passes, but custom signers (hardware
+    // wallets, remote signers) are the reason TronPQSigner exists — validate
+    // here so their mistakes fail locally with a named cause instead of as an
+    // opaque broadcast rejection.
+    const expectedKeySize = PQ_PUBLIC_KEY_SIZES[entry?.scheme as keyof typeof PQ_PUBLIC_KEY_SIZES];
+    if (!expectedKeySize) {
+        throw new Error(
+            `Invalid PQ signature entry: unknown scheme ${String(entry?.scheme)}; ` +
+                `expected one of ${Object.keys(PQ_PUBLIC_KEY_SIZES).join(', ')}`
+        );
+    }
+    const normalized: PQAuthSig = {
+        scheme: entry.scheme,
+        // Strip the prefix case-insensitively BEFORE lowercasing: a `0X`
+        // that survived would fail the hex test with a length one byte too
+        // long and be misreported as the 897-byte framing-header trap.
+        public_key: String(entry.public_key ?? '')
+            .replace(/^0x/i, '')
+            .toLowerCase(),
+        signature: String(entry.signature ?? '')
+            .replace(/^0x/i, '')
+            .toLowerCase(),
+    };
+    // Content and length are distinct faults; naming the wrong one sends the
+    // caller after the wrong fix.
+    if (/[^0-9a-f]/.test(normalized.public_key)) {
+        throw new Error(`Invalid PQ signature entry: ${entry.scheme} public_key must be hex`);
+    }
+    if (normalized.public_key.length !== expectedKeySize * 2) {
+        const hint =
+            entry.scheme === 'FN_DSA_512' && normalized.public_key.length === (expectedKeySize + 1) * 2
+                ? ' (897 bytes: strip the 1-byte NIST framing header — the on-chain form is the raw 896-byte h)'
+                : '';
+        throw new Error(
+            `Invalid PQ signature entry: ${entry.scheme} public_key must be ${expectedKeySize} bytes, ` +
+                `got ${Math.floor(normalized.public_key.length / 2)} bytes${hint}`
+        );
+    }
+    if (normalized.signature.length === 0 || normalized.signature.length % 2 !== 0 || /[^0-9a-f]/.test(normalized.signature)) {
+        throw new Error(`Invalid PQ signature entry: ${entry.scheme} signature must be non-empty hex`);
+    }
+    // Mirror the node's admission rule exactly (java-tron
+    // `PQSchemeRegistry.isValidSignatureLength`, run at the broadcast gate):
+    // an out-of-band signature is rejected there as an opaque
+    // `SIGERROR: pq_auth_sig size is out of bounds`, so catch it locally with
+    // the scheme and the expected band named.
+    const band = PQ_SIGNATURE_SIZES[entry.scheme as keyof typeof PQ_SIGNATURE_SIZES];
+    const signatureBytes = normalized.signature.length / 2;
+    if (signatureBytes < band.min || signatureBytes > band.max) {
+        const expected = band.min === band.max ? `${band.min} bytes` : `${band.min}-${band.max} bytes`;
+        throw new Error(`Invalid PQ signature entry: ${entry.scheme} signature must be ${expected}, got ${signatureBytes} bytes`);
+    }
+    // The node's verifier (FNDSA512.verify) returns false for any Falcon
+    // header other than 0x39. A headerless TVM-precompile slot is 666 bytes
+    // and sits inside the length band, so the band check alone lets it
+    // through to die at broadcast as an opaque `SIGERROR: pq sig invalid`.
+    const header = (PQ_SIGNATURE_HEADERS as Partial<Record<PQSchemeName, number>>)[entry.scheme];
+    if (header !== undefined && parseInt(normalized.signature.slice(0, 2), 16) !== header) {
+        const hint =
+            signatureBytes === band.max - 1
+                ? ' (666 bytes without it looks like the headerless TVM-precompile slot; the transaction form keeps the header)'
+                : '';
+        throw new Error(
+            `Invalid PQ signature entry: ${entry.scheme} signature must start with header byte 0x${header.toString(16)}, ` +
+                `got 0x${normalized.signature.slice(0, 2)}${hint}`
+        );
+    }
+    if (Array.isArray(container.pq_auth_sig)) {
+        // Existing entries may come from untrusted wire data — guard their
+        // shape instead of crashing mid-signing on a malformed co-signer entry.
+        const duplicate = container.pq_auth_sig.some(
+            (sig) =>
+                sig?.scheme === normalized.scheme &&
+                typeof sig.public_key === 'string' &&
+                sig.public_key.replace(/^0x/, '').toLowerCase() === normalized.public_key
+        );
+        if (!duplicate) container.pq_auth_sig.push(normalized);
+    } else {
+        container.pq_auth_sig = [normalized];
+    }
     return transaction;
 }
 

@@ -1,6 +1,6 @@
 {
     "name": "tronweb",
-    "version": "6.5.1",
+    "version": "6.5.1-pq-nile.0",
     "description": "JavaScript SDK that encapsulates the TRON HTTP API",
     "main": "./lib/commonjs/index.js",
     "module": "./lib/esm/index.js",
@@ -18,12 +18,19 @@
         "./utils": {
             "import": "./lib/esm/utils/index.js",
             "require": "./lib/commonjs/utils/index.js"
+        },
+        "./pq": {
+            "import": "./lib/esm/pq/index.js",
+            "require": "./lib/commonjs/pq/index.js"
         }
     },
     "typesVersions": {
         "*": {
             "utils": [
                 "lib/esm/utils/index.d.ts"
+            ],
+            "pq": [
+                "lib/esm/pq/index.d.ts"
             ]
         }
     },
@@ -45,6 +52,7 @@
         "clean:all": "rimraf dist lib",
         "clean": "rimraf dist",
         "test": "vitest run",
+        "test:pq": "vitest run -c vitest.pq.config.ts",
         "test:watch": "vitest",
         "coverage": "vitest run --coverage",
         "test:browser": "vitest run -c vitest.browser.config.ts",
@@ -53,6 +61,7 @@
         "lint:fix": "eslint src --fix"
     },
     "dependencies": {
+        "@noble/post-quantum": "0.7.1",
         "axios": "1.18.0",
         "bignumber.js": "9.1.2",
         "ethereum-cryptography": "2.2.1",

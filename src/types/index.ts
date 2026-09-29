@@ -8,3 +8,4 @@ export * from './TronWeb.js';
 export * from './Trx.js';
 export * from './UtilsTypes.js';
 export * from './Event.js';
+export * from './PQ.js';

@@ -14,7 +14,18 @@ export interface BlockHeaderRawData {
 }
 export interface BlockHeader {
     raw_data: BlockHeaderRawData;
-    witness_signature: string;
+    /**
+     * Absent when the block is produced by a PQ witness: `pq_auth_sig`
+     * replaces `witness_signature` entirely (the two are mutually exclusive
+     * at block level). Observed live on Nile since Falcon-512 activation.
+     */
+    witness_signature?: string;
+    /** Singular (not an array) at block-header level, unlike transactions. */
+    pq_auth_sig?: {
+        scheme: string;
+        public_key: string;
+        signature: string;
+    };
 }
 export interface BlockWithoutDetail {
     blockID: string;
