@@ -111,6 +111,14 @@ describe('attachPQAuthSig', () => {
         attachPQAuthSig(tx, { ...entry, public_key: 'ba'.repeat(896) }); // different key
         expect(tx.pq_auth_sig).toHaveLength(2);
     });
+
+    it('dedupes against a pre-existing co-signer entry written with an uppercase 0X prefix', () => {
+        // The new entry strips 0X; the existing-entry comparison must too, or
+        // the same signer is attached twice and the node rejects the broadcast.
+        const tx = { pq_auth_sig: [{ ...entry, public_key: '0X' + entry.public_key }] } as PQSignedTransaction;
+        attachPQAuthSig(tx, entry);
+        expect(tx.pq_auth_sig).toHaveLength(1);
+    });
 });
 
 describe('Trx.sign with a PQ signer', () => {
@@ -528,6 +536,13 @@ describe('verifyPQTransaction payload binding (txIdMatchesPayload)', () => {
         const result = verifyPQTransaction({ txID, raw_data_hex: tampered, pq_auth_sig });
         expect(result.txIdMatchesPayload).toBe(false);
         expect(result.valid).toBe(false);
+    });
+
+    it('accepts an uppercase 0X prefix on txID and raw_data_hex, like 0x', () => {
+        const { txID, raw_data_hex, pq_auth_sig } = cloneTx();
+        const result = verifyPQTransaction({ txID: '0X' + txID, raw_data_hex: '0X' + raw_data_hex.toUpperCase(), pq_auth_sig });
+        expect(result.txIdMatchesPayload).toBe(true);
+        expect(result.valid).toBe(true);
     });
 
     it('reports null with nothing to bind against', () => {

@@ -120,6 +120,13 @@ describe('FnDsa512 signing', () => {
         expect(FnDsa512.verify(digest, sig, other.publicKey)).toBe(false);
     });
 
+    it('accepts an uppercase 0X prefix on keys, digests and signatures, like 0x', () => {
+        const sig = FnDsa512.sign('0X' + digest, kp.privateKey);
+        expect(FnDsa512.verify('0X' + digest.toUpperCase(), '0X' + sig, '0X' + kp.publicKey)).toBe(true);
+        expect(FnDsa512.getAddress('0X' + kp.publicKey).hex).toBe(kp.address.hex);
+        expect(FnDsa512.keyPairFromPrivateKey('0X' + kp.privateKey).address.hex).toBe(kp.address.hex);
+    });
+
     it('rejects malformed signatures without throwing', () => {
         expect(FnDsa512.verify(digest, 'ff'.repeat(650), kp.publicKey)).toBe(false); // wrong header
         expect(FnDsa512.verify(digest, '39' + 'ff'.repeat(100), kp.publicKey)).toBe(false); // too short

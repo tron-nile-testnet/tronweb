@@ -206,7 +206,7 @@ export function attachPQAuthSig<T extends object>(transaction: T, entry: PQAuthS
             (sig) =>
                 sig?.scheme === normalized.scheme &&
                 typeof sig.public_key === 'string' &&
-                sig.public_key.replace(/^0x/, '').toLowerCase() === normalized.public_key
+                sig.public_key.replace(/^0x/i, '').toLowerCase() === normalized.public_key
         );
         if (!duplicate) container.pq_auth_sig.push(normalized);
     } else {

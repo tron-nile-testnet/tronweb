@@ -260,7 +260,7 @@ const receipt = await tronWeb.trx.sendRawTransaction(signed);
 
 ### Testing
 
-From a clone of this repository (the installed package ships no tests), `npm run test:pq` runs the PQ suite offline — 109 tests, no node required — including byte-level verification of the transactions in `test/fixtures/pq-onchain-transactions.json`: five `FN_DSA_512` and three `ML_DSA_44` transfers that a PQ-enabled java-tron node accepted and executed, signed by throwaway keys derived from trivial seeds (no real account is involved — see `test/pq/onchainFixtures.ts` for their provenance and the seeds).
+From a clone of this repository (the installed package ships no tests), `npm run test:pq` runs the PQ suite offline — 113 tests, no node required — including byte-level verification of the transactions in `test/fixtures/pq-onchain-transactions.json`: five `FN_DSA_512` and three `ML_DSA_44` transfers that a PQ-enabled java-tron node accepted and executed, signed by throwaway keys derived from trivial seeds (no real account is involved — see `test/pq/onchainFixtures.ts` for their provenance and the seeds).
 
 The same command also runs a node-backed suite, `test/pq/onchain.test.ts`, when pointed at a PQ-enabled node with both schemes active. It signs, broadcasts and confirms real Falcon, ML-DSA and mixed ECDSA + PQ multisig transactions, and checks that the node rejects malformed `pq_auth_sig` entries. It spends funds and installs a permission, so run it against a private network only, never Nile or mainnet:
 

@@ -149,9 +149,9 @@ function checkTxIdBinding(transaction: PQVerifiableTransaction, options: VerifyP
     }
     const rawDataHex = transaction.raw_data_hex;
     if (typeof rawDataHex === 'string' && rawDataHex.length > 0) {
-        const clean = rawDataHex.replace(/^0x/, '').toLowerCase();
+        const clean = rawDataHex.replace(/^0x/i, '').toLowerCase();
         if (clean.length % 2 !== 0 || /[^0-9a-f]/.test(clean)) return false;
-        if (sha256('0x' + clean).replace(/^0x/, '') !== String(transaction.txID).replace(/^0x/, '').toLowerCase()) {
+        if (sha256('0x' + clean).replace(/^0x/, '') !== String(transaction.txID).replace(/^0x/i, '').toLowerCase()) {
             return false;
         }
         // The hex matched, but a decoded raw_data JSON riding alongside it is

@@ -46,6 +46,12 @@ describe('MlDsa44', () => {
         expect(MlDsa44.verify(digest, 'ff'.repeat(5_000_000), kp.publicKey)).toBe(false); // oversized: rejected on encoded length
     });
 
+    it('accepts an uppercase 0X prefix on keys, digests and signatures, like 0x', () => {
+        const sig = MlDsa44.sign(digest, kp.privateKey);
+        expect(MlDsa44.verify('0X' + digest, '0X' + sig.toUpperCase(), '0X' + kp.publicKey)).toBe(true);
+        expect(MlDsa44.getAddress('0X' + kp.publicKey).hex).toBe(kp.address.hex);
+    });
+
     it('address is 0x41-prefixed 21 bytes derived from the full 1312-byte key', () => {
         expect(kp.address.hex).toMatch(/^41[0-9a-f]{40}$/);
         expect(MlDsa44.getAddress(kp.publicKey).base58).toBe(kp.address.base58);

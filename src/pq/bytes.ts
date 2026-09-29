@@ -1,7 +1,7 @@
 /** Small byte/hex helpers local to the PQ modules (browser-safe, no Buffer). */
 
 export function hexToBytes(hex: string): Uint8Array {
-    const clean = hex.replace(/^0x/, '').toLowerCase();
+    const clean = hex.replace(/^0x/i, '').toLowerCase();
     if (clean.length % 2 !== 0 || /[^0-9a-f]/.test(clean)) {
         throw new Error('Invalid hex string');
     }
@@ -28,7 +28,7 @@ export function bytesToHex(bytes: Uint8Array): string {
  * materialised as bytes.
  */
 export function hexByteLength(hex: string): number {
-    return hex.replace(/^0x/, '').length / 2;
+    return hex.replace(/^0x/i, '').length / 2;
 }
 
 /** Accept hex string or bytes; enforce an exact byte length with a labeled error. */
@@ -38,7 +38,7 @@ export function toBytes(value: string | Uint8Array, label: string, ...allowedLen
     // it rejected here. Malformed hex is still named first, as hexToBytes does.
     let length: number;
     if (typeof value === 'string') {
-        const clean = value.replace(/^0x/, '');
+        const clean = value.replace(/^0x/i, '');
         if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
             throw new Error('Invalid hex string');
         }
