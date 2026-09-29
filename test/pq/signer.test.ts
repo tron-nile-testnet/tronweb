@@ -48,6 +48,48 @@ describe('createPQSigner', () => {
         expect(() => createPQSigner({ scheme: 'FN_DSA_512', privateKey: 'ab'.repeat(10) })).toThrow(/length/);
         expect(() => createPQSigner({ scheme: 'NOPE' as never, privateKey: SEED })).toThrow(/Unsupported PQ scheme/);
     });
+
+    it('verifies a declared publicKey and address against the private key, as the node does', () => {
+        // The shape of java-tron's localPqWitness key file: the bare 1280-byte
+        // f‖g‖F, the 896-byte public key (required there for Falcon) and,
+        // optionally, the address. It can be passed as-is.
+        const kp = FnDsa512.keyPairFromSeed(SEED);
+        const bare = kp.privateKey.slice(0, FnDsa512.barePrivateKeySize * 2);
+        const keyFile = { scheme: 'FN_DSA_512' as const, privateKey: bare, publicKey: kp.publicKey, address: kp.address.base58 };
+        expect(createPQSigner(keyFile).address).toBe(kp.address.base58);
+        // Hex address; 0x-prefixed, uppercase or byte-array public key.
+        expect(createPQSigner({ ...keyFile, address: kp.address.hex }).address).toBe(kp.address.base58);
+        expect(createPQSigner({ ...keyFile, publicKey: '0x' + kp.publicKey.toUpperCase() }).address).toBe(kp.address.base58);
+        expect(createPQSigner({ ...keyFile, publicKey: new Uint8Array(hexStr2byteArray(kp.publicKey)) }).address).toBe(
+            kp.address.base58
+        );
+        // Blank counts as absent, as the node treats it.
+        expect(createPQSigner({ ...keyFile, publicKey: '', address: ' ' }).address).toBe(kp.address.base58);
+        // Halves from different key pairs are a misassembled file.
+        const other = FnDsa512.keyPairFromSeed('08'.repeat(48));
+        expect(() => createPQSigner({ ...keyFile, publicKey: other.publicKey })).toThrow(
+            /publicKey does not match the key derived from privateKey for FN_DSA_512/
+        );
+        expect(() => createPQSigner({ ...keyFile, address: other.address.base58 })).toThrow(
+            /does not match the address T\w+ derived from the FN_DSA_512 public key/
+        );
+        expect(() => createPQSigner({ ...keyFile, publicKey: '09' + kp.publicKey })).toThrow(
+            /publicKey must be 896 bytes for FN_DSA_512, got 897 bytes \(897 bytes: strip the 1-byte NIST framing header/
+        );
+        // `0x41…` is the 20-byte EVM form in this codebase, not a TRON hex address.
+        expect(() => createPQSigner({ ...keyFile, address: '0x' + kp.address.hex })).toThrow(/does not match the address/);
+        // JSON-shaped junk gets a named error, never a bare TypeError.
+        expect(() => createPQSigner({ ...keyFile, address: 123 as never })).toThrow(/address must be a base58 or hex string/);
+        expect(() => createPQSigner({ ...keyFile, publicKey: 123 as never })).toThrow(/publicKey must be a hex string or Uint8Array/);
+        expect(() => createPQSigner({ ...keyFile, privateKey: undefined as never })).toThrow(/privateKey is required/);
+        expect(() => createPQSigner({ ...keyFile, privateKey: '  ' })).toThrow(/privateKey is required/);
+        // ML-DSA: the node derives the public key; a declared publicKey is optional and verified when given.
+        const ml = MlDsa44.keyPairFromSeed('0a'.repeat(32));
+        const mlFile = { scheme: 'ML_DSA_44' as const, privateKey: ml.privateKey };
+        expect(createPQSigner({ ...mlFile, publicKey: ml.publicKey, address: ml.address.base58 }).address).toBe(ml.address.base58);
+        expect(() => createPQSigner({ ...mlFile, publicKey: 'ab'.repeat(1312) })).toThrow(/publicKey does not match/);
+        expect(() => createPQSigner({ ...mlFile, publicKey: 'ab'.repeat(1313) })).toThrow(/must be 1312 bytes for ML_DSA_44, got 1313/);
+    });
 });
 
 describe('attachPQAuthSig', () => {
