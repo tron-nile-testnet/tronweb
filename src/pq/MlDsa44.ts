@@ -17,7 +17,7 @@
 import { ml_dsa44 } from '@noble/post-quantum/ml-dsa.js';
 import { getBase58CheckAddress, pqPublicKeyToAddress } from '../utils/crypto.js';
 import { hexStr2byteArray } from '../utils/code.js';
-import { hexToBytes, bytesToHex, toBytes, randomBytes } from './bytes.js';
+import { bytesToHex, toBytes, randomBytes } from './bytes.js';
 import { PQ_SIGNATURE_SIZES } from '../types/PQ.js';
 
 export const SCHEME = 'ML_DSA_44' as const;
@@ -122,9 +122,10 @@ export function sign(digest: string | Uint8Array, privateKey: string | Uint8Arra
 export function verify(digest: string | Uint8Array, signature: string | Uint8Array, publicKey: string | Uint8Array): boolean {
     try {
         const digestBytes = toBytes(digest, 'digest', 32);
-        const signatureBytes = typeof signature === 'string' ? hexToBytes(signature) : signature;
+        // toBytes checks the length on the encoded form before decoding, so an
+        // oversized untrusted signature is rejected without being materialised.
+        const signatureBytes = toBytes(signature, 'ML_DSA_44 signature', signatureSize);
         const publicKeyBytes = toBytes(publicKey, 'ML_DSA_44 public key', publicKeySize);
-        if (signatureBytes.length !== signatureSize) return false;
         return ml_dsa44.verify(signatureBytes, digestBytes, publicKeyBytes);
     } catch {
         return false;

@@ -90,18 +90,20 @@ export function pqPublicKeyToAddress(publicKey: string | Uint8Array, scheme?: PQ
     if (typeof publicKey !== 'string' && !(publicKey instanceof Uint8Array)) {
         throw new Error('Invalid PQ public key: expected a hex string or Uint8Array');
     }
-    let bytes: Uint8Array;
+    // Validate and length-check the encoded form before decoding: the key is
+    // untrusted wire data, and hexStr2byteArray materialises a JS number[] of
+    // the whole string, so an oversized key must be rejected before paying
+    // for that allocation.
+    let clean: string | undefined;
     if (typeof publicKey === 'string') {
-        const clean = publicKey.replace(/^0x/i, '');
+        clean = publicKey.replace(/^0x/i, '');
         // hexStr2byteArray silently drops a dangling nibble; reject instead —
         // deriving an address from malformed hex must fail, not "round down".
         if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
             throw new Error('Invalid PQ public key: not a valid hex string');
         }
-        bytes = new Uint8Array(hexStr2byteArray(clean));
-    } else {
-        bytes = publicKey;
     }
+    const length = clean === undefined ? publicKey.length : clean.length / 2;
     let valid: number[];
     if (scheme !== undefined) {
         const size = PQ_PUBLIC_KEY_SIZES[scheme];
@@ -112,10 +114,11 @@ export function pqPublicKeyToAddress(publicKey: string | Uint8Array, scheme?: PQ
     } else {
         valid = Object.values(PQ_PUBLIC_KEY_SIZES);
     }
-    if (!valid.includes(bytes.length)) {
+    if (!valid.includes(length)) {
         const expected = valid.length > 1 ? `one of ${valid.join(', ')}` : String(valid[0]);
-        throw new Error(`Invalid ${scheme ?? 'PQ'} public key length ${bytes.length}; expected ${expected} bytes`);
+        throw new Error(`Invalid ${scheme ?? 'PQ'} public key length ${length}; expected ${expected} bytes`);
     }
+    const bytes = clean === undefined ? (publicKey as Uint8Array) : new Uint8Array(hexStr2byteArray(clean));
     const hash = keccak256(bytes).replace(/^0x/, '');
     return ADDRESS_PREFIX + hash.substring(24);
 }

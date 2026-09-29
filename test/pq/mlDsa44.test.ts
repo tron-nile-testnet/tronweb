@@ -43,6 +43,7 @@ describe('MlDsa44', () => {
         expect(MlDsa44.verify(digest, sig, 'ab'.repeat(1311))).toBe(false); // wrong pk length
         expect(MlDsa44.verify(digest, sig, 'zz'.repeat(1312))).toBe(false); // invalid hex
         expect(MlDsa44.verify('ab'.repeat(31), sig, kp.publicKey)).toBe(false); // wrong digest length
+        expect(MlDsa44.verify(digest, 'ff'.repeat(5_000_000), kp.publicKey)).toBe(false); // oversized: rejected on encoded length
     });
 
     it('address is 0x41-prefixed 21 bytes derived from the full 1312-byte key', () => {

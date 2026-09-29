@@ -25,7 +25,7 @@
 import { falcon512 } from '@noble/post-quantum/falcon.js';
 import { getBase58CheckAddress, pqPublicKeyToAddress } from '../utils/crypto.js';
 import { hexStr2byteArray } from '../utils/code.js';
-import { hexToBytes, bytesToHex, toBytes, concatBytes, randomBytes } from './bytes.js';
+import { hexToBytes, hexByteLength, bytesToHex, toBytes, concatBytes, randomBytes } from './bytes.js';
 import { PQ_SIGNATURE_HEADERS, PQ_SIGNATURE_SIZES } from '../types/PQ.js';
 
 export const SCHEME = 'FN_DSA_512' as const;
@@ -186,13 +186,15 @@ export function verify(digest: string | Uint8Array, signature: string | Uint8Arr
 
 function verifyStrict(digest: string | Uint8Array, signature: string | Uint8Array, publicKey: string | Uint8Array): boolean {
     const digestBytes = toBytes(digest, 'digest', 32);
+    // Band-check the signature on its encoded form before decoding: an
+    // oversized untrusted string must not be materialised only to be rejected.
+    const signatureLength = typeof signature === 'string' ? hexByteLength(signature) : signature.length;
+    if (signatureLength < signatureMinSize || signatureLength > signatureMaxSize) {
+        return false;
+    }
     const signatureBytes = typeof signature === 'string' ? hexToBytes(signature) : signature;
     const publicKeyBytes = toBytes(publicKey, 'FN_DSA_512 public key', publicKeySize);
-    if (
-        signatureBytes.length < signatureMinSize ||
-        signatureBytes.length > signatureMaxSize ||
-        signatureBytes[0] !== signatureHeader
-    ) {
+    if (signatureBytes[0] !== signatureHeader) {
         return false;
     }
     try {

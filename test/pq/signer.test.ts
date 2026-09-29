@@ -12,7 +12,7 @@ import {
 import { attachPQAuthSig, pqPublicKeyToAddress, ECKeySign, pkToAddress } from '../../src/utils/crypto.js';
 import { hexStr2byteArray } from '../../src/utils/code.js';
 import { txCheck } from '../../src/utils/transaction.js';
-import { PQ_SIGNATURE_HEADERS } from '../../src/types/PQ.js';
+import { PQ_MAX_TOTAL_SIGNATURES, PQ_SIGNATURE_HEADERS } from '../../src/types/PQ.js';
 import { Trx } from '../../src/lib/trx/trx.js';
 import type { PQSignedTransaction, Transaction } from '../../src/types/Transaction.js';
 import { FIXTURE_MLDSA_SEED, LOCAL_NODE, falconFixtures, mlDsaFixtures } from './onchainFixtures.js';
@@ -268,6 +268,35 @@ describe('PQ address recovery and verification', () => {
         expect(result.valid).toBe(false);
         expect(result.entries.map((e) => e.valid)).toEqual([true, false]);
         expect(result.entries[1].error).toMatch(/duplicate signer/);
+    });
+
+    it('verifyPQTransaction refuses more entries than the node admits, before grading any', () => {
+        // The node rejects the whole transaction at admission ("total signature
+        // count N exceeds 5"); grading 10,000 entries first would spend a full
+        // PQ verify on each of them.
+        const tx = cloneTx();
+        const entry = tx.pq_auth_sig[0];
+        tx.pq_auth_sig = Array.from({ length: 10_000 }, () => ({ ...entry }));
+        const result = verifyPQTransaction(tx, { txCheck });
+        expect(result.valid).toBe(false);
+        expect(result.entries).toEqual([]);
+        expect(result.error).toMatch(/too many pq_auth_sig entries: 10000 exceeds the node limit of 5/);
+        // Exactly the limit is still graded entry by entry.
+        tx.pq_auth_sig = Array.from({ length: PQ_MAX_TOTAL_SIGNATURES }, () => ({ ...entry }));
+        expect(verifyPQTransaction(tx, { txCheck }).entries).toHaveLength(PQ_MAX_TOTAL_SIGNATURES);
+    });
+
+    it('verifyPQTransaction grades oversized wire strings on their encoded length', () => {
+        // A 10M-char public_key or signature is rejected from its string
+        // length; it is never decoded into bytes first.
+        const tx = cloneTx();
+        tx.pq_auth_sig[0].public_key = 'ab'.repeat(5_000_000);
+        expect(verifyPQTransaction(tx, { txCheck }).entries[0].error).toMatch(
+            /FN_DSA_512 public key length 5000000; expected 896 bytes/
+        );
+        const big = cloneTx();
+        big.pq_auth_sig[0].signature = '39' + 'ab'.repeat(5_000_000);
+        expect(verifyPQTransaction(big, { txCheck }).entries[0].valid).toBe(false);
     });
 
     it('ecRecover on a mixed ECDSA+PQ transaction includes the PQ co-signers', () => {

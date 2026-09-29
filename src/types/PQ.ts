@@ -86,6 +86,16 @@ export const PQ_SIGNATURE_SIZES: Record<PQSchemeName, { min: number; max: number
 };
 
 /**
+ * Most signatures a transaction may carry, across `signature` and
+ * `pq_auth_sig` combined — java-tron's `TotalSignNum`
+ * (`DynamicPropertiesStore.saveTotalSignNum(5)`, a chain constant rather than
+ * a proposal parameter). A `pq_auth_sig` list longer than this alone is
+ * rejected at the broadcast gate, at P2P ingress and in consensus ("total
+ * signature count N exceeds 5") before any per-entry check runs.
+ */
+export const PQ_MAX_TOTAL_SIGNATURES = 5;
+
+/**
  * Leading byte a scheme's transaction signature must carry, where one
  * exists. Falcon's compressed encoding is 0x39 (0x30 | logn, logn = 9);
  * java-tron's `FNDSA512.verify` returns false for any other header (the

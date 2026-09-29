@@ -11,7 +11,7 @@
  * `MlDsa44.ts` — and verified against real on-chain transactions in
  * `test/pq/` and its fixtures.
  */
-import { PQAuthSig, PQSchemeName, PQ_CHAIN_PARAM_KEYS } from '../types/PQ.js';
+import { PQAuthSig, PQSchemeName, PQ_CHAIN_PARAM_KEYS, PQ_MAX_TOTAL_SIGNATURES } from '../types/PQ.js';
 import { pqPublicKeyToAddress } from '../utils/crypto.js';
 import { cloneTransaction } from '../utils/clone.js';
 import { sha256 } from '../utils/ethersUtils.js';
@@ -23,7 +23,7 @@ export * as MlDsa44 from './MlDsa44.js';
 export { createPQSigner } from './signer.js';
 export type { CreatePQSignerOptions } from './signer.js';
 export type { PQAuthSig, PQSchemeName, TronPQSigner } from '../types/PQ.js';
-export { PQ_CHAIN_PARAM_KEYS, PQ_PUBLIC_KEY_SIZES, isTronPQSigner } from '../types/PQ.js';
+export { PQ_CHAIN_PARAM_KEYS, PQ_MAX_TOTAL_SIGNATURES, PQ_PUBLIC_KEY_SIZES, isTronPQSigner } from '../types/PQ.js';
 
 /** Minimal structural view of TronWeb used here, to avoid a circular import. */
 interface TronWebLike {
@@ -98,9 +98,10 @@ export interface PQVerificationResult {
      * representation present was checked against `txID` (needs
      * `options.txCheck` when `raw_data` is present). `false`: a check ran
      * and failed — this forces `valid` to false. `null`: some payload could
-     * not be checked (typically `raw_data` present without `txCheck`), or
-     * there was no payload to check at all — while `raw_data` is present
-     * this also forces `valid` to false.
+     * not be checked (typically `raw_data` present without `txCheck`), there
+     * was no payload to check at all, or the transaction was refused before
+     * grading (`error` is set) and the binding was never evaluated — while
+     * `raw_data` is present this also forces `valid` to false.
      */
     txIdMatchesPayload: boolean | null;
     /** Per-entry outcome, in the order the entries appear on the transaction. */
@@ -114,8 +115,10 @@ export interface PQVerificationResult {
     /**
      * Set when the argument itself could not be graded — missing, not an
      * object, or not plain data (a function, class instance, circular
-     * reference or throwing accessor inside it). `valid` is then false and
-     * `entries` is empty.
+     * reference or throwing accessor inside it) — or carries more than
+     * `PQ_MAX_TOTAL_SIGNATURES` `pq_auth_sig` entries, which no node admits
+     * even before its ECDSA `signature` entries are counted. `valid` is then
+     * false, `entries` is empty and `txIdMatchesPayload` is `null`.
      */
     error?: string;
 }
@@ -164,6 +167,11 @@ function checkTxIdBinding(transaction: PQVerifiableTransaction, options: VerifyP
  *
  * Pure offline check — does not consult a node, and does not check that the
  * derived addresses actually hold permission weight on the owner account.
+ * Cost is linear in the size of the input: every length check runs on the
+ * encoded form before anything is decoded, and a `pq_auth_sig` list longer
+ * than `PQ_MAX_TOTAL_SIGNATURES` is refused before any per-entry grading. A
+ * caller grading transactions received over the network should still bound
+ * the request size upstream, as for any decoder.
  *
  * The payload binding is only as strong as what is available: `raw_data_hex`
  * is checked automatically, while binding the decoded `raw_data` JSON needs
@@ -176,7 +184,8 @@ function checkTxIdBinding(transaction: PQVerifiableTransaction, options: VerifyP
  * Grades a plain-data snapshot of `transaction`, not the live object, and
  * never throws: an argument that is missing, not an object, or not plain
  * data (functions, class instances, circular references, an accessor that
- * throws) grades `valid: false` with `error` set.
+ * throws) grades `valid: false` with `error` set, as does a `pq_auth_sig`
+ * list longer than `PQ_MAX_TOTAL_SIGNATURES`.
  */
 export function verifyPQTransaction(
     transaction: PQVerifiableTransaction,
@@ -200,6 +209,21 @@ export function verifyPQTransaction(
     const txID = tx.txID;
     const hasRawData = tx.raw_data != null;
     const list: unknown[] = Array.isArray(tx.pq_auth_sig) ? tx.pq_auth_sig : [];
+    // The node counts `signature` and `pq_auth_sig` together against
+    // PQ_MAX_TOTAL_SIGNATURES and rejects the whole transaction before looking
+    // at any entry, so a pq_auth_sig list longer than that alone is never
+    // admitted. Mirror that much — for the same reason: no per-entry grading
+    // is spent on such a list. ECDSA `signature` entries are not counted here
+    // (this grades PQ signatures, not node admission), so a mixed transaction
+    // inside this cap can still exceed the node's.
+    if (list.length > PQ_MAX_TOTAL_SIGNATURES) {
+        return {
+            valid: false,
+            txIdMatchesPayload: null,
+            entries: [],
+            error: `too many pq_auth_sig entries: ${list.length} exceeds the node limit of ${PQ_MAX_TOTAL_SIGNATURES}`,
+        };
+    }
     // This grades untrusted wire data: never let a malformed entry escape as
     // an exception where the contract promises a { valid: false } verdict.
     const entries: PQVerificationResult['entries'] = list.map((item) => {

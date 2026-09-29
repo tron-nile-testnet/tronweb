@@ -124,6 +124,7 @@ describe('FnDsa512 signing', () => {
         expect(FnDsa512.verify(digest, 'ff'.repeat(650), kp.publicKey)).toBe(false); // wrong header
         expect(FnDsa512.verify(digest, '39' + 'ff'.repeat(100), kp.publicKey)).toBe(false); // too short
         expect(FnDsa512.verify(digest, '39' + 'ff'.repeat(700), kp.publicKey)).toBe(false); // too long
+        expect(FnDsa512.verify(digest, '39' + 'ff'.repeat(5_000_000), kp.publicKey)).toBe(false); // oversized: rejected on encoded length
     });
 
     it('verify() is total — malformed keys and digests return false, never throw', () => {
