@@ -139,7 +139,7 @@ describe.skipIf(!NODE_AVAILABLE)('PQ signing against a PQ-enabled node', () => {
                 expect(entry.scheme).toBe(scheme);
                 expect(entry.public_key.length / 2).toBe(PQ_PUBLIC_KEY_SIZES[scheme]);
                 expect(verifyPQTransaction(signed, { txCheck })).toMatchObject({ valid: true, txIdMatchesPayload: true });
-                expect(Trx.getPQSignerAddresses(signed)).toEqual([signer.address]);
+                expect(Trx.pqRecover(signed)).toEqual([signer.address]);
 
                 const res = await broadcast(signed);
                 expect(res.result, `${res.code}: ${decodeMessage(res.message)}`).toBe(true);
@@ -304,8 +304,12 @@ describe.skipIf(!NODE_AVAILABLE)('PQ signing against a PQ-enabled node', () => {
             expect(onchain.ret?.[0]?.contractRet).toBe('SUCCESS');
             expect(onchain.signature).toHaveLength(1);
             expect(onchain.pq_auth_sig).toHaveLength(1);
-            expect((Trx.ecRecover(onchain) as string[]).sort()).toEqual(both);
-            expect(verifyPQTransaction(onchain, { txCheck })).toMatchObject({ valid: true, txIdMatchesPayload: true });
+            // ecRecover reports the ECDSA signer only; the PQ co-signer is
+            // credited by verifyPQTransaction, which actually checks its signature.
+            expect(Trx.ecRecover(onchain)).toBe(owner);
+            const verified = verifyPQTransaction(onchain, { txCheck });
+            expect(verified).toMatchObject({ valid: true, txIdMatchesPayload: true });
+            expect([owner, ...verified.entries.map((e) => TronWeb.address.fromHex(e.addressHex))].sort()).toEqual(both);
         }, 120_000);
     });
 });

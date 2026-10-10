@@ -13,6 +13,7 @@
  */
 import { PQAuthSig, PQSchemeName, PQ_CHAIN_PARAM_KEYS, PQ_MAX_TOTAL_SIGNATURES } from '../types/PQ.js';
 import { pqPublicKeyToAddress } from '../utils/crypto.js';
+import { registerPQVerifier } from '../utils/pqVerifier.js';
 import { cloneTransaction } from '../utils/clone.js';
 import { sha256 } from '../utils/ethersUtils.js';
 import * as FnDsa512 from './FnDsa512.js';
@@ -24,6 +25,13 @@ export { createPQSigner } from './signer.js';
 export type { CreatePQSignerOptions } from './signer.js';
 export type { PQAuthSig, PQSchemeName, TronPQSigner } from '../types/PQ.js';
 export { PQ_CHAIN_PARAM_KEYS, PQ_MAX_TOTAL_SIGNATURES, PQ_PUBLIC_KEY_SIZES, isTronPQSigner } from '../types/PQ.js';
+
+// Hand the verifiers to the main entry: `Trx.pqRecover` verifies through this
+// registry so that `tronweb` itself never imports the PQ crypto. Importing
+// this module is the opt-in; until then pqRecover refuses rather than
+// deriving unverified addresses.
+registerPQVerifier(FnDsa512.SCHEME, FnDsa512.verify);
+registerPQVerifier(MlDsa44.SCHEME, MlDsa44.verify);
 
 /** Minimal structural view of TronWeb used here, to avoid a circular import. */
 interface TronWebLike {
@@ -195,7 +203,7 @@ export function verifyPQTransaction(
     // every property exactly once, so an accessor (getter / Proxy) cannot
     // show one txID to the signature check and another to the payload
     // binding, or one public key to address derivation and another to
-    // verify — Trx.getPQSignerAddresses already grades the same way.
+    // verify — Trx.pqRecover already grades the same way.
     let tx: PQVerifiableTransaction;
     try {
         if (transaction === null || typeof transaction !== 'object') {

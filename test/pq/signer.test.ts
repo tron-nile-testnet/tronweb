@@ -232,15 +232,24 @@ describe('alterTransaction guard for PQ-signed transactions', () => {
 });
 
 describe('PQ address recovery and verification', () => {
-    it('Trx.getPQSignerAddresses derives the on-chain owner', () => {
-        const addresses = Trx.getPQSignerAddresses(cloneTx());
+    it('Trx.pqRecover verifies the on-chain signature and recovers the owner', () => {
+        const addresses = Trx.pqRecover(cloneTx());
         expect(addresses).toHaveLength(1);
         expect(TronWeb.address.toHex(addresses[0])).toBe(
             onChainTx.raw_data.contract[0].parameter.value.owner_address.toLowerCase()
         );
     });
 
-    it('Trx.ecRecover redirects pure-PQ transactions to getPQSignerAddresses', () => {
+    it("Trx.pqRecover rejects a tampered signature instead of naming its public key's address", () => {
+        // Recovery, not derivation: the entry still carries the owner's
+        // public key, but the signature no longer verifies against the txID.
+        const tx = cloneTx();
+        const sig = tx.pq_auth_sig[0].signature;
+        tx.pq_auth_sig[0].signature = sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00');
+        expect(() => Trx.pqRecover(tx)).toThrow(/pq_auth_sig\[0\] \(FN_DSA_512\) does not verify/);
+    });
+
+    it('Trx.ecRecover redirects pure-PQ transactions to pqRecover', () => {
         expect(() => Trx.ecRecover(cloneTx() as never)).toThrow(/post-quantum signatures/);
     });
 
@@ -301,7 +310,7 @@ describe('PQ address recovery and verification', () => {
         // it would name a signer the node never credits.
         const tx = cloneTx();
         tx.pq_auth_sig[0].public_key = 'ab'.repeat(1312);
-        expect(() => Trx.getPQSignerAddresses(tx)).toThrow(/FN_DSA_512 public key length 1312/);
+        expect(() => Trx.pqRecover(tx)).toThrow(/FN_DSA_512 public key length 1312/);
         const result = verifyPQTransaction(tx, { txCheck });
         expect(result.valid).toBe(false);
         expect(result.entries[0].addressHex).toBe('');
@@ -349,16 +358,49 @@ describe('PQ address recovery and verification', () => {
         expect(verifyPQTransaction(big, { txCheck }).entries[0].valid).toBe(false);
     });
 
-    it('ecRecover on a mixed ECDSA+PQ transaction includes the PQ co-signers', () => {
-        const tx = cloneTx();
-        const ecdsaKey = '11'.repeat(32);
-        (tx as never as { signature: string[] }).signature = [ECKeySign(hexStr2byteArray(tx.txID), hexStr2byteArray(ecdsaKey))];
-        const recovered = Trx.ecRecover(tx as never) as string[];
-        expect(recovered).toHaveLength(2);
-        expect(recovered[0]).toBe(pkToAddress(ecdsaKey));
-        expect(TronWeb.address.toHex(recovered[1])).toBe(
-            onChainTx.raw_data.contract[0].parameter.value.owner_address.toLowerCase()
-        );
+    describe('ecRecover on a mixed ECDSA+PQ transaction', () => {
+        // ECDSA recovery is self-authenticating: the address is computed
+        // from the signature, so a forged signature yields some other
+        // address, never the victim's. A PQ address is derived from the
+        // public key that travels next to the signature and is the same
+        // whether that signature is genuine or forged — and the core bundle
+        // cannot verify PQ signatures (that is what keeps @noble/post-quantum
+        // out of it). Reporting it beside recovered ECDSA signers would let a
+        // tampered pq_auth_sig entry pass as a signer, so ecRecover reports
+        // the ECDSA signers only.
+        const pqOwner = TronWeb.address.fromHex(onChainTx.raw_data.contract[0].parameter.value.owner_address);
+        const ecdsaKeys = ['11'.repeat(32), '22'.repeat(32)];
+        const mixed = (keys: string[]) => {
+            const tx = cloneTx();
+            tx.signature = keys.map((key) => ECKeySign(hexStr2byteArray(tx.txID), hexStr2byteArray(key)));
+            return tx;
+        };
+
+        it('recovers only the ECDSA signers, shaped by their count as on an ECDSA-only transaction', () => {
+            expect(Trx.ecRecover(mixed([ecdsaKeys[0]]) as never)).toBe(pkToAddress(ecdsaKeys[0]));
+            expect(Trx.ecRecover(mixed(ecdsaKeys) as never)).toEqual(ecdsaKeys.map((key) => pkToAddress(key)));
+        });
+
+        it('never reports a PQ co-signer, whose signature it cannot verify', () => {
+            const tx = mixed(ecdsaKeys);
+            const sig = tx.pq_auth_sig[0].signature;
+            tx.pq_auth_sig[0].signature = sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00');
+            // The forged entry still carries the owner's public key, so a
+            // derivation would name the owner as a signer; recovery must not.
+            expect(Trx.ecRecover(tx as never)).not.toContain(pqOwner);
+            expect(verifyPQTransaction(tx).entries[0].valid).toBe(false);
+        });
+
+        it('composes with verifyPQTransaction into the full, verified signer set', () => {
+            const tx = mixed(ecdsaKeys);
+            const result = verifyPQTransaction(tx, { txCheck });
+            expect(result.valid).toBe(true);
+            const pqSigners = result.entries.filter((e) => e.valid).map((e) => TronWeb.address.fromHex(e.addressHex));
+            expect([...(Trx.ecRecover(tx as never) as string[]), ...pqSigners]).toEqual([
+                ...ecdsaKeys.map((key) => pkToAddress(key)),
+                pqOwner,
+            ]);
+        });
     });
 });
 
@@ -389,7 +431,7 @@ describe('ML_DSA_44 through the signer pipeline', () => {
             expect(result.txIdMatchesPayload).toBe(true);
             const owner = f.tx.raw_data.contract[0].parameter.value.owner_address.toLowerCase();
             expect(result.entries[0].addressHex).toBe(owner);
-            expect(TronWeb.address.toHex(Trx.getPQSignerAddresses(f.tx)[0])).toBe(owner);
+            expect(TronWeb.address.toHex(Trx.pqRecover(f.tx)[0])).toBe(owner);
 
             const kp = MlDsa44.keyPairFromSeed(FIXTURE_MLDSA_SEED);
             expect(entry.public_key).toBe(kp.publicKey);
@@ -448,9 +490,14 @@ describe('ML_DSA_44 through the signer pipeline', () => {
         expect(result.valid).toBe(true);
         expect(result.txIdMatchesPayload).toBe(true);
         expect(result.entries.map((e) => e.scheme)).toEqual(['FN_DSA_512', 'ML_DSA_44']);
-        const addresses = Trx.getPQSignerAddresses(signed);
+        const addresses = Trx.pqRecover(signed);
         expect(addresses).toHaveLength(2);
         expect(addresses[1]).toBe(signer.address);
+        // Each entry is verified with its own scheme: a tampered ML-DSA
+        // signature fails as ML-DSA, and names its position.
+        const sig = signed.pq_auth_sig[1].signature;
+        signed.pq_auth_sig[1].signature = sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00');
+        expect(() => Trx.pqRecover(signed)).toThrow(/pq_auth_sig\[1\] \(ML_DSA_44\) does not verify/);
     });
 
     it('sendRawTransaction accepts a pure ML_DSA_44 transaction shape', async () => {

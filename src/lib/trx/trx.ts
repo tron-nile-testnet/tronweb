@@ -8,6 +8,7 @@ import { RawTrx } from './RawTrx.js';
 import { txCheck, txCheckWithArgs } from '../../utils/transaction.js';
 import { cloneTransaction } from '../../utils/clone.js';
 import { ecRecover, pqPublicKeyToAddress } from '../../utils/crypto.js';
+import { getPQVerifier } from '../../utils/pqVerifier.js';
 import { BroadcastReturn, AddressOptions, BroadcastHexReturn, Address } from '../../types/Trx.js';
 import { AnySignedTransaction, PQSignedTransaction, SignedTransaction, Transaction } from '../../types/Transaction.js';
 import { TronPQSigner, isTronPQSigner } from '../../types/PQ.js';
@@ -55,6 +56,24 @@ export class Trx extends AbstractTrx<false> {
         return Trx.ecRecover(transaction);
     }
 
+    /**
+     * Recover the ECDSA signer(s) of a signed transaction from its
+     * `signature` entries: one base58 address for a single signature, an
+     * array for several. Recovery is self-authenticating — the address is
+     * computed from the signature itself, so a forged signature yields some
+     * other address, never the victim's.
+     *
+     * PQ co-signers (`pq_auth_sig`) are NOT reported, on a mixed transaction
+     * either. A PQ address can only be derived from the public key sent next
+     * to the signature, which is the same whether that signature is genuine
+     * or forged, and this module cannot verify PQ signatures (that is what
+     * keeps the PQ crypto out of the default bundle) — so listing such an
+     * address beside recovered ones would let a tampered entry pass as a
+     * signer. For the PQ co-signers use `pqRecover`, which verifies each
+     * entry (and needs `tronweb/pq` imported), or `verifyPQTransaction`
+     * from `tronweb/pq`. A pure-PQ transaction has nothing to recover here
+     * and throws.
+     */
     static ecRecover(transaction: SignedTransaction): Address | Address[] {
         const tx = cloneTransaction(transaction);
         if (!txCheck(tx)) {
@@ -64,43 +83,40 @@ export class Trx extends AbstractTrx<false> {
             if (tx.pq_auth_sig?.length) {
                 throw new Error(
                     'Transaction is signed with post-quantum signatures; ECDSA recovery does not apply. ' +
-                        'Use getPQSignerAddresses instead.'
+                        'Use pqRecover instead.'
                 );
             }
             throw new Error('Transaction is not signed');
         }
         const txID = tx.txID;
-        // Mixed multisig: PQ co-signers are part of the signer set, so a
-        // recovery that listed only the ECDSA participants would misreport
-        // the transaction as under-signed.
-        const pqAddresses = (tx.pq_auth_sig ?? []).map((entry) =>
-            TronWeb.address.fromHex(pqPublicKeyToAddress(entry.public_key, entry.scheme))
-        );
-        if (tx.signature.length === 1 && !pqAddresses.length) {
-            const tronAddress = ecRecover(txID, tx.signature[0]);
-            return TronWeb.address.fromHex(tronAddress);
+        if (tx.signature.length === 1) {
+            return TronWeb.address.fromHex(ecRecover(txID, tx.signature[0]));
         }
-        return [
-            ...tx.signature.map((sig) => {
-                const tronAddress = ecRecover(txID, sig);
-                return TronWeb.address.fromHex(tronAddress);
-            }),
-            ...pqAddresses,
-        ];
+        return tx.signature.map((sig) => TronWeb.address.fromHex(ecRecover(txID, sig)));
     }
 
-    getPQSignerAddresses(transaction: PQSignedTransaction): Address[] {
-        return Trx.getPQSignerAddresses(transaction);
+    pqRecover(transaction: PQSignedTransaction): Address[] {
+        return Trx.pqRecover(transaction);
     }
 
     /**
-     * Derive the signer addresses of a PQ-signed transaction from the public
-     * keys embedded in its `pq_auth_sig` entries. PQ schemes have no
-     * ecrecover-style primitive, but none is needed — the full public key
-     * travels with the signature. Note this derives, it does not verify: use
-     * `verifyPQTransaction` from `tronweb/pq` to check the signatures.
+     * The PQ counterpart of `ecRecover`: verify every `pq_auth_sig` entry
+     * against the txID and return the signer addresses, in entry order.
+     * PQ schemes have no ecrecover-style primitive, so recovery is a
+     * verification — the public key travels with the signature, the
+     * signature is checked against it and the txID, and only then is the
+     * address derived from the key. An entry that does not verify throws,
+     * naming its position and scheme, so a tampered entry never surfaces
+     * its public key's address. ECDSA `signature` entries are ignored;
+     * `ecRecover` covers those.
+     *
+     * The verifiers come from `tronweb/pq`, which registers them when it is
+     * imported, so that `tronweb` itself stays free of the PQ crypto.
+     * Without that import this throws rather than degrading to an
+     * unverified derivation. `verifyPQTransaction` from `tronweb/pq` is the
+     * non-throwing form with per-entry verdicts.
      */
-    static getPQSignerAddresses(transaction: PQSignedTransaction): Address[] {
+    static pqRecover(transaction: PQSignedTransaction): Address[] {
         const tx = cloneTransaction(transaction);
         if (!txCheck(tx)) {
             throw new Error('Invalid transaction');
@@ -108,10 +124,23 @@ export class Trx extends AbstractTrx<false> {
         if (!tx.pq_auth_sig?.length) {
             throw new Error('Transaction has no pq_auth_sig entries');
         }
-        // Scheme-strict, as the node is: an entry whose key is the other
-        // scheme's size throws here instead of listing a signer the node
-        // would reject ("public key or signature length mismatch").
-        return tx.pq_auth_sig.map((entry) => TronWeb.address.fromHex(pqPublicKeyToAddress(entry.public_key, entry.scheme)));
+        const txID = tx.txID;
+        return tx.pq_auth_sig.map((entry, index) => {
+            // Scheme-strict, as the node is: an unknown scheme, or a key of
+            // the other scheme's size, throws here instead of naming a signer
+            // the node would reject ("public key or signature length mismatch").
+            const addressHex = pqPublicKeyToAddress(entry.public_key, entry.scheme);
+            const verify = getPQVerifier(entry.scheme);
+            if (!verify) {
+                throw new Error(
+                    `PQ signature verification for ${entry.scheme} is not loaded: import "tronweb/pq" before calling pqRecover`
+                );
+            }
+            if (!verify(txID, entry.signature, entry.public_key)) {
+                throw new Error(`pq_auth_sig[${index}] (${entry.scheme}) does not verify against the transaction txID`);
+            }
+            return TronWeb.address.fromHex(addressHex);
+        });
     }
 
     async verifyMessage(message: string, signature: string, address = this.tronWeb.defaultAddress.base58, useTronHeader = true) {
