@@ -247,9 +247,15 @@ export class Trx extends AbstractTrx<false> {
             throw new Error('Transaction is already signed');
         }
 
+        // A PQ signer is read once, validated, and used from that snapshot
+        // for both the owner check and the attached entry: a hand-written
+        // signer's fields are claims, and the live object could change
+        // between here and the attach step after signDigest resolves.
+        const pqSigner = isTronPQSigner(privateKey) ? utils.crypto.snapshotPQSigner(privateKey) : undefined;
+
         if (!multisig) {
-            const address = isTronPQSigner(privateKey)
-                ? toHex(privateKey.address).toLowerCase()
+            const address = pqSigner
+                ? pqSigner.addressHex
                 : toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
 
             if (address !== toHex(tx.raw_data.contract[0].parameter.value.owner_address)) {
@@ -261,11 +267,11 @@ export class Trx extends AbstractTrx<false> {
             throw new Error('Invalid transaction');
         }
 
-        if (isTronPQSigner(privateKey)) {
-            const signature = await privateKey.signDigest(tx.txID);
+        if (pqSigner) {
+            const signature = await pqSigner.signDigest(tx.txID);
             return utils.crypto.attachPQAuthSig(tx, {
-                scheme: privateKey.scheme,
-                public_key: privateKey.publicKey,
+                scheme: pqSigner.scheme,
+                public_key: pqSigner.publicKey,
                 signature,
             }) as PQSignedTransaction & T;
         }
@@ -376,6 +382,9 @@ export class Trx extends AbstractTrx<false> {
             throw new Error('Invalid transaction provided');
         }
 
+        // Read once, validated; see sign().
+        const pqSigner = isTronPQSigner(privateKey) ? utils.crypto.snapshotPQSigner(privateKey) : undefined;
+
         // If owner permission or permission id exists in transaction, do sign directly
         // If no permission id inside transaction or user passes permission id, use old way to reset permission id
         if (!transaction.raw_data.contract[0].Permission_id && permissionId > 0) {
@@ -384,8 +393,8 @@ export class Trx extends AbstractTrx<false> {
 
             // check if the signing key is inside the permission list. PQ signers
             // appear there by their derived address, same as ECDSA keys.
-            const address = isTronPQSigner(privateKey)
-                ? toHex(privateKey.address).toLowerCase()
+            const address = pqSigner
+                ? pqSigner.addressHex
                 : toHex(this.tronWeb.address.fromPrivateKey(privateKey as string) as string).toLowerCase();
             const signWeight = await this.getSignWeight(transaction, permissionId);
 
@@ -454,11 +463,11 @@ export class Trx extends AbstractTrx<false> {
         if (!txCheck(transaction)) {
             throw new Error('Invalid transaction');
         }
-        if (isTronPQSigner(privateKey)) {
-            const signature = await privateKey.signDigest(transaction.txID);
+        if (pqSigner) {
+            const signature = await pqSigner.signDigest(transaction.txID);
             return utils.crypto.attachPQAuthSig(transaction as PQSignedTransaction, {
-                scheme: privateKey.scheme,
-                public_key: privateKey.publicKey,
+                scheme: pqSigner.scheme,
+                public_key: pqSigner.publicKey,
                 signature,
             });
         }

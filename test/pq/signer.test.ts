@@ -15,6 +15,7 @@ import { txCheck } from '../../src/utils/transaction.js';
 import { PQ_MAX_TOTAL_SIGNATURES, PQ_SIGNATURE_HEADERS } from '../../src/types/PQ.js';
 import { Trx } from '../../src/lib/trx/trx.js';
 import type { PQSignedTransaction, Transaction } from '../../src/types/Transaction.js';
+import type { TronPQSigner } from '../../src/types/PQ.js';
 import { FIXTURE_MLDSA_SEED, LOCAL_NODE, falconFixtures, mlDsaFixtures } from './onchainFixtures.js';
 
 const SEED = '07'.repeat(48);
@@ -216,6 +217,82 @@ describe('Trx.multiSign with a PQ signer', () => {
         await tronWeb.trx.multiSign(tx as Transaction, signer);
         const signed = await tronWeb.trx.multiSign(tx as Transaction, signer);
         expect(signed.pq_auth_sig).toHaveLength(1);
+    });
+});
+
+describe('hand-written TronPQSigner validation', () => {
+    // A hardware wallet or remote signer implements TronPQSigner by hand, so
+    // its scheme / publicKey / address are claims, not derivations. sign and
+    // multiSign must read them once, check them against each other before
+    // anything is signed, and sign from that snapshot — never from the live
+    // object after signDigest resolved.
+    const tronWeb = new TronWeb({ fullHost: LOCAL_NODE });
+    const local = createPQSigner({ scheme: 'FN_DSA_512', privateKey: SEED });
+    const fixtureOwner = TronWeb.address.fromHex(onChainTx.raw_data.contract[0].parameter.value.owner_address);
+    const unsignedTx = () => {
+        const tx = cloneTx();
+        tx.pq_auth_sig = [];
+        return tx;
+    };
+    const counting = (overrides: Partial<TronPQSigner>) => {
+        let calls = 0;
+        const signer: TronPQSigner = {
+            scheme: local.scheme,
+            address: local.address,
+            publicKey: local.publicKey,
+            signDigest(digest: string) {
+                calls++;
+                return local.signDigest(digest);
+            },
+            ...overrides,
+        };
+        return { signer, calls: () => calls };
+    };
+
+    it('rejects an address that was not derived from the publicKey, before signing', async () => {
+        // Claims the fixture owner's address over SEED's key: the owner check
+        // would pass, and the node would reject the signature as the wrong key.
+        const { signer, calls } = counting({ address: fixtureOwner });
+        await expect(tronWeb.trx.sign(unsignedTx() as Transaction, signer)).rejects.toThrow(
+            /Invalid PQ signer: address does not match the address T\w+ derived from the FN_DSA_512 publicKey/
+        );
+        await expect(tronWeb.trx.multiSign(cloneTx() as Transaction, signer)).rejects.toThrow(/address does not match/);
+        expect(calls()).toBe(0);
+    });
+
+    it('rejects an unknown scheme and a publicKey of the wrong size, before signing', async () => {
+        const unknown = counting({ scheme: 'NOPE' as never });
+        await expect(tronWeb.trx.multiSign(cloneTx() as Transaction, unknown.signer)).rejects.toThrow(
+            /Invalid PQ signer: unknown scheme NOPE/
+        );
+        // An ML-DSA-sized key under a Falcon scheme.
+        const wrongSize = counting({ publicKey: 'ab'.repeat(1312) });
+        await expect(tronWeb.trx.multiSign(cloneTx() as Transaction, wrongSize.signer)).rejects.toThrow(
+            /Invalid PQ signer: publicKey must be 896 bytes for FN_DSA_512, got 1312 bytes/
+        );
+        expect(unknown.calls() + wrongSize.calls()).toBe(0);
+    });
+
+    it('signs from the fields read before signDigest, not from what the signer claims afterwards', async () => {
+        // A signer that rewrites itself inside signDigest (a reconnecting
+        // remote signer, or a hostile one) must not get the rewritten key
+        // attached next to a signature made with the original one.
+        const other = createPQSigner({ scheme: 'FN_DSA_512', privateKey: '0a'.repeat(48) });
+        const signer: TronPQSigner = {
+            scheme: local.scheme,
+            address: local.address,
+            publicKey: local.publicKey,
+            signDigest(digest: string) {
+                const sig = local.signDigest(digest);
+                Object.assign(this as object, { scheme: 'ML_DSA_44', publicKey: other.publicKey, address: other.address });
+                return sig;
+            },
+        };
+        const signed = await tronWeb.trx.multiSign(cloneTx() as Transaction, signer);
+        const added = signed.pq_auth_sig[signed.pq_auth_sig.length - 1];
+        expect(added.scheme).toBe('FN_DSA_512');
+        expect(added.public_key).toBe(local.publicKey);
+        expect(FnDsa512.verify(signed.txID, added.signature, added.public_key)).toBe(true);
     });
 });
 

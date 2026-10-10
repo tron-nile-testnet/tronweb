@@ -6,7 +6,14 @@ import { byte2hexStr, byteArray2hexStr } from './bytes.js';
 import { keccak256, sha256, recoverAddress, arrayify, Signature } from './ethersUtils.js';
 import { secp256k1 as secp } from 'ethereum-cryptography/secp256k1';
 import { SignedTransaction } from '../types/Transaction.js';
-import { PQAuthSig, PQSchemeName, PQ_PUBLIC_KEY_SIZES, PQ_SIGNATURE_HEADERS, PQ_SIGNATURE_SIZES } from '../types/PQ.js';
+import {
+    PQAuthSig,
+    PQSchemeName,
+    PQ_PUBLIC_KEY_SIZES,
+    PQ_SIGNATURE_HEADERS,
+    PQ_SIGNATURE_SIZES,
+    TronPQSigner,
+} from '../types/PQ.js';
 
 import type { BytesLike } from '../types/UtilsTypes.js';
 
@@ -213,6 +220,70 @@ export function attachPQAuthSig<T extends object>(transaction: T, entry: PQAuthS
         container.pq_auth_sig = [normalized];
     }
     return transaction;
+}
+
+/** A `TronPQSigner` as `snapshotPQSigner` read and validated it. */
+export interface PQSignerSnapshot {
+    scheme: PQSchemeName;
+    /** On-chain form: lowercase hex, no 0x prefix. */
+    publicKey: string;
+    /** 21-byte 0x41-prefixed lowercase hex, derived from `publicKey`. */
+    addressHex: string;
+    /** The signer's `signDigest`, bound to the signer it was read from. */
+    signDigest: (digest: string) => Promise<string> | string;
+}
+
+/**
+ * Read a `TronPQSigner` once and check its claims against each other,
+ * before anything is signed. `createPQSigner` output always passes; a
+ * hardware wallet or remote signer implements the interface by hand, so its
+ * `scheme`, `publicKey` and `address` are claims, not derivations — and an
+ * address that was not derived from the public key would pass the owner /
+ * permission check and then sign as a different key, producing a well-formed
+ * transaction the node rejects. Signing then works from the returned
+ * snapshot, never from the live object: a signer that rewrites its fields
+ * while `signDigest` is pending cannot get a key attached that did not sign.
+ */
+export function snapshotPQSigner(signer: TronPQSigner): PQSignerSnapshot {
+    // Each property is read exactly once, here.
+    const { scheme, publicKey, address, signDigest } = signer;
+    const expectedKeySize = PQ_PUBLIC_KEY_SIZES[scheme as keyof typeof PQ_PUBLIC_KEY_SIZES];
+    if (!expectedKeySize) {
+        throw new Error(
+            `Invalid PQ signer: unknown scheme ${String(scheme)}; expected one of ${Object.keys(PQ_PUBLIC_KEY_SIZES).join(', ')}`
+        );
+    }
+    if (typeof publicKey !== 'string') {
+        throw new Error('Invalid PQ signer: publicKey must be a hex string');
+    }
+    const key = publicKey.replace(/^0x/i, '').toLowerCase();
+    if (key.length === 0 || key.length % 2 !== 0 || /[^0-9a-f]/.test(key)) {
+        throw new Error('Invalid PQ signer: publicKey must be hex');
+    }
+    if (key.length !== expectedKeySize * 2) {
+        const hint =
+            scheme === 'FN_DSA_512' && key.length === (expectedKeySize + 1) * 2
+                ? ' (897 bytes: strip the 1-byte NIST framing header — the on-chain form is the raw 896-byte h)'
+                : '';
+        throw new Error(
+            `Invalid PQ signer: publicKey must be ${expectedKeySize} bytes for ${scheme}, got ${Math.floor(key.length / 2)} bytes${hint}`
+        );
+    }
+    if (typeof address !== 'string' || address.trim() === '') {
+        throw new Error('Invalid PQ signer: address must be a base58 or hex string');
+    }
+    const addressHex = pqPublicKeyToAddress(key, scheme);
+    const base58 = getBase58CheckAddress(hexStr2byteArray(addressHex));
+    const declared = address.trim();
+    if (declared !== base58 && declared.replace(/^0x/i, '').toLowerCase() !== addressHex) {
+        // Do not echo the declared value: a misassembled signer may have put
+        // key material in this field, and the caller knows what they sent.
+        throw new Error(`Invalid PQ signer: address does not match the address ${base58} derived from the ${scheme} publicKey`);
+    }
+    if (typeof signDigest !== 'function') {
+        throw new Error('Invalid PQ signer: signDigest must be a function');
+    }
+    return { scheme, publicKey: key, addressHex, signDigest: (digest) => signDigest.call(signer, digest) };
 }
 
 export function ecRecover(signedData: string, signature: string) {
