@@ -11,7 +11,7 @@ import { ecRecover, pqPublicKeyToAddress } from '../../utils/crypto.js';
 import { getPQVerifier } from '../../utils/pqVerifier.js';
 import { BroadcastReturn, AddressOptions, BroadcastHexReturn, Address } from '../../types/Trx.js';
 import { AnySignedTransaction, PQSignedTransaction, SignedTransaction, Transaction } from '../../types/Transaction.js';
-import { TronPQSigner, isTronPQSigner } from '../../types/PQ.js';
+import { PQ_MAX_TOTAL_SIGNATURES, TronPQSigner, isTronPQSigner } from '../../types/PQ.js';
 import { TypedDataDomain, TypedDataField } from '../../utils/typedData.js';
 import { Resource } from '../../types/TransactionBuilder.js';
 
@@ -110,6 +110,12 @@ export class Trx extends AbstractTrx<false> {
      * its public key's address. ECDSA `signature` entries are ignored;
      * `ecRecover` covers those.
      *
+     * A `pq_auth_sig` list longer than `PQ_MAX_TOTAL_SIGNATURES` is refused
+     * before any entry is verified, as `verifyPQTransaction` does: recovery
+     * stops at the first entry that fails, but one valid entry repeated
+     * fills a list of any length, and every entry costs a full PQ verify on
+     * the caller's thread. ECDSA entries are not counted against the cap.
+     *
      * The verifiers come from `tronweb/pq`, which registers them when it is
      * imported, so that `tronweb` itself stays free of the PQ crypto.
      * Without that import this throws rather than degrading to an
@@ -123,6 +129,19 @@ export class Trx extends AbstractTrx<false> {
         }
         if (!tx.pq_auth_sig?.length) {
             throw new Error('Transaction has no pq_auth_sig entries');
+        }
+        // The node counts `signature` and `pq_auth_sig` together against
+        // PQ_MAX_TOTAL_SIGNATURES and rejects the whole transaction before
+        // looking at any entry, so a pq_auth_sig list longer than that alone
+        // is never admitted. Mirror that much, ahead of every per-entry step:
+        // the loop below stops at the first entry that fails, but one valid
+        // entry repeated fills a list of any length, and each entry costs a
+        // full PQ verify. Same message as verifyPQTransaction. ECDSA entries
+        // are not counted (this recovers PQ signers, not node admission).
+        if (tx.pq_auth_sig.length > PQ_MAX_TOTAL_SIGNATURES) {
+            throw new Error(
+                `too many pq_auth_sig entries: ${tx.pq_auth_sig.length} exceeds the node limit of ${PQ_MAX_TOTAL_SIGNATURES}`
+            );
         }
         const txID = tx.txID;
         return tx.pq_auth_sig.map((entry, index) => {

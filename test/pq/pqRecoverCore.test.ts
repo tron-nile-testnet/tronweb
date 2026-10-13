@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Trx } from '../../src/lib/trx/trx.js';
+import { PQ_MAX_TOTAL_SIGNATURES } from '../../src/types/PQ.js';
 import { falconFixtures } from './onchainFixtures.js';
 
 // This file deliberately never imports `src/pq` — it exercises the main entry
@@ -14,5 +15,15 @@ describe('Trx.pqRecover without tronweb/pq loaded', () => {
 
     it('refuses to recover, pointing at tronweb/pq, instead of deriving unverified addresses', () => {
         expect(() => Trx.pqRecover(tx)).toThrow(/import "tronweb\/pq"/);
+    });
+
+    it('refuses an oversized pq_auth_sig list before looking for a verifier', () => {
+        // The count check precedes every per-entry step, the verifier lookup
+        // included, so an unloaded core reports the count, not the import.
+        const oversized = {
+            ...tx,
+            pq_auth_sig: Array.from({ length: PQ_MAX_TOTAL_SIGNATURES + 1 }, () => ({ ...tx.pq_auth_sig[0] })),
+        };
+        expect(() => Trx.pqRecover(oversized)).toThrow(/too many pq_auth_sig entries: 6 exceeds the node limit of 5/);
     });
 });

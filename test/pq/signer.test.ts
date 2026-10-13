@@ -81,15 +81,21 @@ describe('createPQSigner', () => {
         expect(() => createPQSigner({ ...keyFile, address: '0x' + kp.address.hex })).toThrow(/does not match the address/);
         // JSON-shaped junk gets a named error, never a bare TypeError.
         expect(() => createPQSigner({ ...keyFile, address: 123 as never })).toThrow(/address must be a base58 or hex string/);
-        expect(() => createPQSigner({ ...keyFile, publicKey: 123 as never })).toThrow(/publicKey must be a hex string or Uint8Array/);
+        expect(() => createPQSigner({ ...keyFile, publicKey: 123 as never })).toThrow(
+            /publicKey must be a hex string or Uint8Array/
+        );
         expect(() => createPQSigner({ ...keyFile, privateKey: undefined as never })).toThrow(/privateKey is required/);
         expect(() => createPQSigner({ ...keyFile, privateKey: '  ' })).toThrow(/privateKey is required/);
         // ML-DSA: the node derives the public key; a declared publicKey is optional and verified when given.
         const ml = MlDsa44.keyPairFromSeed('0a'.repeat(32));
         const mlFile = { scheme: 'ML_DSA_44' as const, privateKey: ml.privateKey };
-        expect(createPQSigner({ ...mlFile, publicKey: ml.publicKey, address: ml.address.base58 }).address).toBe(ml.address.base58);
+        expect(createPQSigner({ ...mlFile, publicKey: ml.publicKey, address: ml.address.base58 }).address).toBe(
+            ml.address.base58
+        );
         expect(() => createPQSigner({ ...mlFile, publicKey: 'ab'.repeat(1312) })).toThrow(/publicKey does not match/);
-        expect(() => createPQSigner({ ...mlFile, publicKey: 'ab'.repeat(1313) })).toThrow(/must be 1312 bytes for ML_DSA_44, got 1313/);
+        expect(() => createPQSigner({ ...mlFile, publicKey: 'ab'.repeat(1313) })).toThrow(
+            /must be 1312 bytes for ML_DSA_44, got 1313/
+        );
     });
 });
 
@@ -324,6 +330,25 @@ describe('PQ address recovery and verification', () => {
         const sig = tx.pq_auth_sig[0].signature;
         tx.pq_auth_sig[0].signature = sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00');
         expect(() => Trx.pqRecover(tx)).toThrow(/pq_auth_sig\[0\] \(FN_DSA_512\) does not verify/);
+    });
+
+    it('Trx.pqRecover refuses more entries than the node admits, before verifying any', () => {
+        // The node rejects the whole transaction at admission ("total signature
+        // count N exceeds 5"). pqRecover stops at the first entry that fails,
+        // but one valid entry repeated fills a list of any length, so without
+        // the cap a 10,000-entry list costs 10,000 full PQ verifies on the
+        // caller's thread — the same cap verifyPQTransaction applies.
+        const tx = cloneTx();
+        const entry = tx.pq_auth_sig[0];
+        // Every entry is tampered: the per-entry check would throw at index 0,
+        // so the count error surfacing proves no entry was examined.
+        const sig = entry.signature;
+        const tampered = { ...entry, signature: sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00') };
+        tx.pq_auth_sig = Array.from({ length: 10_000 }, () => ({ ...tampered }));
+        expect(() => Trx.pqRecover(tx)).toThrow(/too many pq_auth_sig entries: 10000 exceeds the node limit of 5/);
+        // Exactly the limit is examined entry by entry.
+        tx.pq_auth_sig = [{ ...entry }, ...Array.from({ length: PQ_MAX_TOTAL_SIGNATURES - 1 }, () => ({ ...tampered }))];
+        expect(() => Trx.pqRecover(tx)).toThrow(/pq_auth_sig\[1\] \(FN_DSA_512\) does not verify/);
     });
 
     it('Trx.ecRecover redirects pure-PQ transactions to pqRecover', () => {
