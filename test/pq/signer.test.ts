@@ -101,20 +101,28 @@ describe('attachPQAuthSig', () => {
         expect(tx.pq_auth_sig[0].signature.startsWith('39')).toBe(true);
     });
 
-    it('dedupes by public key, not by signature bytes (Falcon is randomized)', () => {
+    it('refuses a repeat signer by public key, not by signature bytes (Falcon is randomized)', () => {
+        // The node rejects a transaction carrying the same signer twice
+        // ("<addr> has signed twice!"), so a repeat fails here, by name, as
+        // multiSign already fails a repeated ECDSA signer — instead of being
+        // skipped silently, which hid from the caller that nothing was added.
         const tx = {} as PQSignedTransaction;
         attachPQAuthSig(tx, entry);
-        attachPQAuthSig(tx, { ...entry, signature: '39' + 'ee'.repeat(650) }); // same key, new sig
+        const address = TronWeb.address.fromHex(pqPublicKeyToAddress(entry.public_key, 'FN_DSA_512'));
+        // Same key, new signature bytes: still the same signer.
+        expect(() => attachPQAuthSig(tx, { ...entry, signature: '39' + 'ee'.repeat(650) })).toThrow(
+            `Address ${address} already sign transaction`
+        );
         expect(tx.pq_auth_sig).toHaveLength(1);
         attachPQAuthSig(tx, { ...entry, public_key: 'ba'.repeat(896) }); // different key
         expect(tx.pq_auth_sig).toHaveLength(2);
     });
 
-    it('dedupes against a pre-existing co-signer entry written with an uppercase 0X prefix', () => {
+    it('spots the repeat behind a pre-existing co-signer entry written with an uppercase 0X prefix', () => {
         // The new entry strips 0X; the existing-entry comparison must too, or
         // the same signer is attached twice and the node rejects the broadcast.
         const tx = { pq_auth_sig: [{ ...entry, public_key: '0X' + entry.public_key }] } as PQSignedTransaction;
-        attachPQAuthSig(tx, entry);
+        expect(() => attachPQAuthSig(tx, entry)).toThrow(/already sign transaction/);
         expect(tx.pq_auth_sig).toHaveLength(1);
     });
 });
@@ -208,12 +216,15 @@ describe('Trx.multiSign with a PQ signer', () => {
         expect(FnDsa512.verify(signed.txID, added.signature, added.public_key)).toBe(true);
     });
 
-    it('signing twice with the same PQ signer attaches only one entry', async () => {
+    it('signing twice with the same PQ signer throws instead of attaching a second entry', async () => {
         const tx = cloneTx();
         tx.pq_auth_sig = [];
-        await tronWeb.trx.multiSign(tx as Transaction, signer);
-        const signed = await tronWeb.trx.multiSign(tx as Transaction, signer);
-        expect(signed.pq_auth_sig).toHaveLength(1);
+        const once = await tronWeb.trx.multiSign(tx as Transaction, signer);
+        expect(once.pq_auth_sig).toHaveLength(1);
+        await expect(tronWeb.trx.multiSign(once as Transaction, signer)).rejects.toThrow(
+            `Address ${signer.address} already sign transaction`
+        );
+        expect(once.pq_auth_sig).toHaveLength(1);
     });
 });
 
@@ -491,11 +502,12 @@ describe('ML_DSA_44 through the signer pipeline', () => {
         expect(MlDsa44.verify(signed.txID, signed.pq_auth_sig[0].signature, signed.pq_auth_sig[0].public_key)).toBe(true);
     });
 
-    it('signing twice with the same ML_DSA_44 signer attaches only one entry', async () => {
-        const tx = clonePlainTx();
-        await tronWeb.trx.multiSign(tx as Transaction, signer);
-        const signed = await tronWeb.trx.multiSign(tx as Transaction, signer);
-        expect(signed.pq_auth_sig).toHaveLength(1);
+    it('signing twice with the same ML_DSA_44 signer throws instead of attaching a second entry', async () => {
+        const once = await tronWeb.trx.multiSign(clonePlainTx() as Transaction, signer);
+        await expect(tronWeb.trx.multiSign(once as Transaction, signer)).rejects.toThrow(
+            `Address ${signer.address} already sign transaction`
+        );
+        expect(once.pq_auth_sig).toHaveLength(1);
     });
 
     it('pqRecover recovers the ML_DSA_44 signer of a freshly signed transaction', async () => {

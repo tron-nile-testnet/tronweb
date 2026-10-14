@@ -132,10 +132,14 @@ export function pqPublicKeyToAddress(publicKey: string | Uint8Array, scheme?: PQ
 
 /**
  * Attach a PQ signature entry to `transaction.pq_auth_sig`, mirroring what
- * `signTransaction` does for `transaction.signature`. Deduplicates by
- * (scheme, public_key) — NOT by signature bytes: Falcon signing is
- * randomized, so the same key legitimately produces different bytes on every
- * run, and only key identity marks a duplicate signer.
+ * `signTransaction` does for `transaction.signature`. A repeat signer — an
+ * entry whose (scheme, public_key) is already attached — throws, as
+ * `multiSign` does for a repeated ECDSA signer: the node rejects such a
+ * transaction ("<addr> has signed twice!"), and a silent skip hid from the
+ * caller that nothing was added. The repeat is detected by key, NOT by
+ * signature bytes: Falcon signing is randomized, so the same key legitimately
+ * produces different bytes on every run, and only key identity marks a
+ * repeat.
  */
 export function attachPQAuthSig<T extends object>(transaction: T, entry: PQAuthSig): T {
     const container = transaction as { pq_auth_sig?: PQAuthSig[] };
@@ -209,13 +213,23 @@ export function attachPQAuthSig<T extends object>(transaction: T, entry: PQAuthS
     if (Array.isArray(container.pq_auth_sig)) {
         // Existing entries may come from untrusted wire data — guard their
         // shape instead of crashing mid-signing on a malformed co-signer entry.
-        const duplicate = container.pq_auth_sig.some(
+        const repeat = container.pq_auth_sig.some(
             (sig) =>
                 sig?.scheme === normalized.scheme &&
                 typeof sig.public_key === 'string' &&
                 sig.public_key.replace(/^0x/i, '').toLowerCase() === normalized.public_key
         );
-        if (!duplicate) container.pq_auth_sig.push(normalized);
+        if (repeat) {
+            // Same wording as multiSign's repeated-ECDSA-signer error, so a
+            // caller handling one handles both. The key passed the size and
+            // hex checks above, so the derivation cannot throw here.
+            const addressHex = pqPublicKeyToAddress(normalized.public_key, normalized.scheme);
+            throw new Error(
+                `Address ${getBase58CheckAddress(hexStr2byteArray(addressHex))} already sign transaction: ` +
+                    `a ${normalized.scheme} pq_auth_sig entry with this public key is already attached`
+            );
+        }
+        container.pq_auth_sig.push(normalized);
     } else {
         container.pq_auth_sig = [normalized];
     }
