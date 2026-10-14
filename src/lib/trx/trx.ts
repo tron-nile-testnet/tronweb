@@ -66,13 +66,11 @@ export class Trx extends AbstractTrx<false> {
      * PQ co-signers (`pq_auth_sig`) are NOT reported, on a mixed transaction
      * either. A PQ address can only be derived from the public key sent next
      * to the signature, which is the same whether that signature is genuine
-     * or forged, and this module cannot verify PQ signatures (that is what
-     * keeps the PQ crypto out of the default bundle) — so listing such an
-     * address beside recovered ones would let a tampered entry pass as a
-     * signer. For the PQ co-signers use `pqRecover`, which verifies each
-     * entry (and needs `tronweb/pq` imported), or `verifyPQTransaction`
-     * from `tronweb/pq`. A pure-PQ transaction has nothing to recover here
-     * and throws.
+     * or forged, so listing such an address beside recovered ones — without
+     * the verification this ECDSA path does not perform — would let a
+     * tampered entry pass as a signer. For the PQ co-signers use `pqRecover`,
+     * which verifies each entry, or `verifyPQTransaction` from `tronweb/pq`.
+     * A pure-PQ transaction has nothing to recover here and throws.
      */
     static ecRecover(transaction: SignedTransaction): Address | Address[] {
         const tx = cloneTransaction(transaction);
@@ -116,10 +114,11 @@ export class Trx extends AbstractTrx<false> {
      * fills a list of any length, and every entry costs a full PQ verify on
      * the caller's thread. ECDSA entries are not counted against the cap.
      *
-     * The verifiers come from `tronweb/pq`, which registers them when it is
-     * imported, so that `tronweb` itself stays free of the PQ crypto.
-     * Without that import this throws rather than degrading to an
-     * unverified derivation. `verifyPQTransaction` from `tronweb/pq` is the
+     * The verifiers are built in (`utils/pqVerifier.ts`, a fixed table of
+     * the supported schemes), so this works from the main entry alone —
+     * including in an ESM/CJS dual-package install, where an import of
+     * `tronweb/pq` lands in a different copy of the package than the `Trx`
+     * the application holds. `verifyPQTransaction` from `tronweb/pq` is the
      * non-throwing form with per-entry verdicts.
      */
     static pqRecover(transaction: PQSignedTransaction): Address[] {
@@ -151,9 +150,10 @@ export class Trx extends AbstractTrx<false> {
             const addressHex = pqPublicKeyToAddress(entry.public_key, entry.scheme);
             const verify = getPQVerifier(entry.scheme);
             if (!verify) {
-                throw new Error(
-                    `PQ signature verification for ${entry.scheme} is not loaded: import "tronweb/pq" before calling pqRecover`
-                );
+                // Unreachable once the scheme-strict derivation above has
+                // passed; a scheme with a key size but no verifier fails here
+                // by name instead of as a TypeError.
+                throw new Error(`Unsupported PQ scheme ${entry.scheme}: no signature verifier`);
             }
             if (!verify(txID, entry.signature, entry.public_key)) {
                 throw new Error(`pq_auth_sig[${index}] (${entry.scheme}) does not verify against the transaction txID`);

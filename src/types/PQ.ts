@@ -1,8 +1,9 @@
 /**
- * Post-quantum (PQ) signature types shared by the core SDK and the opt-in
- * `tronweb/pq` entry point. This module is type-only plus small constants —
- * it must never import the PQ crypto implementation, so that the default
- * bundle stays free of `@noble/post-quantum`.
+ * Post-quantum (PQ) signature types shared by the core SDK, the scheme
+ * modules in `pq/` and the `tronweb/pq` entry point. This module is type-only
+ * plus small constants — it must never import the PQ crypto implementation:
+ * `pq/FnDsa512.ts` and `pq/MlDsa44.ts` take their size constants from here,
+ * so an import in the other direction would be a cycle.
  */
 
 /**
