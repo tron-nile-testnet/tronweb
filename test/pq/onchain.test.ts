@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { TronWeb } from '../setup/TronWeb.js';
-import { createPQSigner, isSchemeEnabled, verifyPQTransaction, PQ_PUBLIC_KEY_SIZES } from '../../src/pq/index.js';
+import { createPQSigner, isSchemeEnabled, PQ_PUBLIC_KEY_SIZES } from '../../src/pq/index.js';
 import type { PQSchemeName, TronPQSigner } from '../../src/pq/index.js';
 import { Trx } from '../../src/lib/trx/trx.js';
-import { txCheck } from '../../src/utils/transaction.js';
 import type { AnySignedTransaction, PQSignedTransaction, SignedTransaction } from '../../src/types/Transaction.js';
 import { FIXTURE_FALCON_SEED, FIXTURE_MLDSA_SEED, FIXTURE_PATH, PQ_NODE } from './onchainFixtures.js';
 import type { OnChainFixture } from './onchainFixtures.js';
@@ -138,7 +137,6 @@ describe.skipIf(!NODE_AVAILABLE)('PQ signing against a PQ-enabled node', () => {
                 const entry = signed.pq_auth_sig[0];
                 expect(entry.scheme).toBe(scheme);
                 expect(entry.public_key.length / 2).toBe(PQ_PUBLIC_KEY_SIZES[scheme]);
-                expect(verifyPQTransaction(signed, { txCheck })).toMatchObject({ valid: true, txIdMatchesPayload: true });
                 expect(Trx.pqRecover(signed)).toEqual([signer.address]);
 
                 const res = await broadcast(signed);
@@ -305,11 +303,9 @@ describe.skipIf(!NODE_AVAILABLE)('PQ signing against a PQ-enabled node', () => {
             expect(onchain.signature).toHaveLength(1);
             expect(onchain.pq_auth_sig).toHaveLength(1);
             // ecRecover reports the ECDSA signer only; the PQ co-signer is
-            // credited by verifyPQTransaction, which actually checks its signature.
+            // credited by pqRecover, which actually checks its signature.
             expect(Trx.ecRecover(onchain)).toBe(owner);
-            const verified = verifyPQTransaction(onchain, { txCheck });
-            expect(verified).toMatchObject({ valid: true, txIdMatchesPayload: true });
-            expect([owner, ...verified.entries.map((e) => TronWeb.address.fromHex(e.addressHex))].sort()).toEqual(both);
+            expect([owner, ...Trx.pqRecover(onchain as unknown as PQSignedTransaction)].sort()).toEqual(both);
         }, 120_000);
     });
 });

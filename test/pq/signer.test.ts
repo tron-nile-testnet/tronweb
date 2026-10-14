@@ -1,17 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { TronWeb } from '../setup/TronWeb.js';
-import {
-    createPQSigner,
-    FnDsa512,
-    MlDsa44,
-    verifyPQTransaction,
-    isTronPQSigner,
-    isSchemeEnabled,
-    assertSchemeEnabled,
-} from '../../src/pq/index.js';
+import { createPQSigner, FnDsa512, MlDsa44, isTronPQSigner, isSchemeEnabled, assertSchemeEnabled } from '../../src/pq/index.js';
 import { attachPQAuthSig, pqPublicKeyToAddress, ECKeySign, pkToAddress } from '../../src/utils/crypto.js';
 import { hexStr2byteArray } from '../../src/utils/code.js';
-import { txCheck } from '../../src/utils/transaction.js';
 import { PQ_MAX_TOTAL_SIGNATURES, PQ_SIGNATURE_HEADERS } from '../../src/types/PQ.js';
 import { Trx } from '../../src/lib/trx/trx.js';
 import type { PQSignedTransaction, Transaction } from '../../src/types/Transaction.js';
@@ -337,7 +328,7 @@ describe('PQ address recovery and verification', () => {
         // count N exceeds 5"). pqRecover stops at the first entry that fails,
         // but one valid entry repeated fills a list of any length, so without
         // the cap a 10,000-entry list costs 10,000 full PQ verifies on the
-        // caller's thread — the same cap verifyPQTransaction applies.
+        // caller's thread.
         const tx = cloneTx();
         const entry = tx.pq_auth_sig[0];
         // Every entry is tampered: the per-entry check would throw at index 0,
@@ -353,33 +344,6 @@ describe('PQ address recovery and verification', () => {
 
     it('Trx.ecRecover redirects pure-PQ transactions to pqRecover', () => {
         expect(() => Trx.ecRecover(cloneTx() as never)).toThrow(/post-quantum signatures/);
-    });
-
-    it('verifyPQTransaction validates all entries of an on-chain tx', () => {
-        // The fixture carries a decoded raw_data, so txCheck is what proves
-        // the txID binding that a `valid` verdict now requires.
-        const result = verifyPQTransaction(cloneTx(), { txCheck });
-        expect(result.valid).toBe(true);
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.entries[0].addressHex).toBe(onChainTx.raw_data.contract[0].parameter.value.owner_address.toLowerCase());
-    });
-
-    it('verifyPQTransaction flags a tampered signature', () => {
-        const tx = cloneTx();
-        const sig = tx.pq_auth_sig[0].signature;
-        tx.pq_auth_sig[0].signature = sig.slice(0, -2) + (sig.endsWith('00') ? '01' : '00');
-        expect(verifyPQTransaction(tx).valid).toBe(false);
-    });
-
-    it('verifyPQTransaction returns valid:false (never throws) on malformed wire data', () => {
-        const txID = onChainTx.txID;
-        expect(verifyPQTransaction({ txID, pq_auth_sig: [null as never] }).valid).toBe(false);
-        expect(verifyPQTransaction({ txID, pq_auth_sig: 'garbage' as never }).valid).toBe(false);
-        expect(verifyPQTransaction({ txID, pq_auth_sig: [{ scheme: 'FN_DSA_512' } as never] }).valid).toBe(false);
-        expect(verifyPQTransaction({ txID, pq_auth_sig: [] }).valid).toBe(false);
-        const short = cloneTx();
-        short.pq_auth_sig[0].public_key = 'ab'.repeat(895);
-        expect(verifyPQTransaction(short).valid).toBe(false);
     });
 
     it('attachPQAuthSig tolerates malformed pre-existing co-signer entries', () => {
@@ -413,51 +377,17 @@ describe('PQ address recovery and verification', () => {
         const tx = cloneTx();
         tx.pq_auth_sig[0].public_key = 'ab'.repeat(1312);
         expect(() => Trx.pqRecover(tx)).toThrow(/FN_DSA_512 public key length 1312/);
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.valid).toBe(false);
-        expect(result.entries[0].addressHex).toBe('');
-        expect(result.entries[0].error).toMatch(/FN_DSA_512 public key length 1312/);
     });
 
-    it('verifyPQTransaction grades a repeated signer entry invalid, as the node does', () => {
-        // The node credits each derived address once and rejects a repeat
-        // ("<addr> has signed twice!"); per-entry grading alone would let a
-        // caller summing weights double count it.
-        const tx = cloneTx();
-        tx.pq_auth_sig.push({ ...tx.pq_auth_sig[0] });
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.valid).toBe(false);
-        expect(result.entries.map((e) => e.valid)).toEqual([true, false]);
-        expect(result.entries[1].error).toMatch(/duplicate signer/);
-    });
-
-    it('verifyPQTransaction refuses more entries than the node admits, before grading any', () => {
-        // The node rejects the whole transaction at admission ("total signature
-        // count N exceeds 5"); grading 10,000 entries first would spend a full
-        // PQ verify on each of them.
-        const tx = cloneTx();
-        const entry = tx.pq_auth_sig[0];
-        tx.pq_auth_sig = Array.from({ length: 10_000 }, () => ({ ...entry }));
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.valid).toBe(false);
-        expect(result.entries).toEqual([]);
-        expect(result.error).toMatch(/too many pq_auth_sig entries: 10000 exceeds the node limit of 5/);
-        // Exactly the limit is still graded entry by entry.
-        tx.pq_auth_sig = Array.from({ length: PQ_MAX_TOTAL_SIGNATURES }, () => ({ ...entry }));
-        expect(verifyPQTransaction(tx, { txCheck }).entries).toHaveLength(PQ_MAX_TOTAL_SIGNATURES);
-    });
-
-    it('verifyPQTransaction grades oversized wire strings on their encoded length', () => {
+    it('pqRecover refuses oversized wire strings on their encoded length', () => {
         // A 10M-char public_key or signature is rejected from its string
         // length; it is never decoded into bytes first.
         const tx = cloneTx();
         tx.pq_auth_sig[0].public_key = 'ab'.repeat(5_000_000);
-        expect(verifyPQTransaction(tx, { txCheck }).entries[0].error).toMatch(
-            /FN_DSA_512 public key length 5000000; expected 896 bytes/
-        );
+        expect(() => Trx.pqRecover(tx)).toThrow(/FN_DSA_512 public key length 5000000; expected 896 bytes/);
         const big = cloneTx();
         big.pq_auth_sig[0].signature = '39' + 'ab'.repeat(5_000_000);
-        expect(verifyPQTransaction(big, { txCheck }).entries[0].valid).toBe(false);
+        expect(() => Trx.pqRecover(big)).toThrow(/pq_auth_sig\[0\] \(FN_DSA_512\) does not verify/);
     });
 
     describe('ecRecover on a mixed ECDSA+PQ transaction', () => {
@@ -465,11 +395,10 @@ describe('PQ address recovery and verification', () => {
         // from the signature, so a forged signature yields some other
         // address, never the victim's. A PQ address is derived from the
         // public key that travels next to the signature and is the same
-        // whether that signature is genuine or forged — and the core bundle
-        // cannot verify PQ signatures (that is what keeps @noble/post-quantum
-        // out of it). Reporting it beside recovered ECDSA signers would let a
+        // whether that signature is genuine or forged, and ecRecover does not
+        // verify it. Reporting it beside recovered ECDSA signers would let a
         // tampered pq_auth_sig entry pass as a signer, so ecRecover reports
-        // the ECDSA signers only.
+        // the ECDSA signers only; pqRecover verifies and reports the PQ ones.
         const pqOwner = TronWeb.address.fromHex(onChainTx.raw_data.contract[0].parameter.value.owner_address);
         const ecdsaKeys = ['11'.repeat(32), '22'.repeat(32)];
         const mixed = (keys: string[]) => {
@@ -490,15 +419,12 @@ describe('PQ address recovery and verification', () => {
             // The forged entry still carries the owner's public key, so a
             // derivation would name the owner as a signer; recovery must not.
             expect(Trx.ecRecover(tx as never)).not.toContain(pqOwner);
-            expect(verifyPQTransaction(tx).entries[0].valid).toBe(false);
+            expect(() => Trx.pqRecover(tx)).toThrow(/pq_auth_sig\[0\] \(FN_DSA_512\) does not verify/);
         });
 
-        it('composes with verifyPQTransaction into the full, verified signer set', () => {
+        it('composes with pqRecover into the full, verified signer set', () => {
             const tx = mixed(ecdsaKeys);
-            const result = verifyPQTransaction(tx, { txCheck });
-            expect(result.valid).toBe(true);
-            const pqSigners = result.entries.filter((e) => e.valid).map((e) => TronWeb.address.fromHex(e.addressHex));
-            expect([...(Trx.ecRecover(tx as never) as string[]), ...pqSigners]).toEqual([
+            expect([...(Trx.ecRecover(tx as never) as string[]), ...Trx.pqRecover(tx)]).toEqual([
                 ...ecdsaKeys.map((key) => pkToAddress(key)),
                 pqOwner,
             ]);
@@ -508,7 +434,7 @@ describe('PQ address recovery and verification', () => {
 
 describe('ML_DSA_44 through the signer pipeline', () => {
     // No public network has ML-DSA active yet, so the scheme === 'ML_DSA_44'
-    // branches in signer.ts, attachPQAuthSig and verifyPQTransaction are
+    // branches in signer.ts, attachPQAuthSig and Trx.pqRecover are
     // pinned here offline, and their wire format is checked against the
     // ML_DSA_44 transfers a PQ-enabled private net accepted (mlDsaFixtures).
     const tronWeb = new TronWeb({ fullHost: LOCAL_NODE });
@@ -520,7 +446,7 @@ describe('ML_DSA_44 through the signer pipeline', () => {
     });
 
     it.each(mlDsaFixtures.map((f) => [f.block, f] as const))(
-        'block %i: an accepted ML_DSA_44 transfer verifies, binds, and derives its owner from the fixture seed',
+        'block %i: an accepted ML_DSA_44 transfer verifies, recovers, and derives its owner from the fixture seed',
         (_block, f) => {
             const entry = f.tx.pq_auth_sig[0];
             expect(entry.scheme).toBe('ML_DSA_44');
@@ -528,11 +454,7 @@ describe('ML_DSA_44 through the signer pipeline', () => {
             expect(entry.signature.length / 2).toBe(MlDsa44.signatureSize);
             expect(MlDsa44.verify(f.tx.txID, entry.signature, entry.public_key)).toBe(true);
 
-            const result = verifyPQTransaction(f.tx, { txCheck });
-            expect(result.valid).toBe(true);
-            expect(result.txIdMatchesPayload).toBe(true);
             const owner = f.tx.raw_data.contract[0].parameter.value.owner_address.toLowerCase();
-            expect(result.entries[0].addressHex).toBe(owner);
             expect(TronWeb.address.toHex(Trx.pqRecover(f.tx)[0])).toBe(owner);
 
             const kp = MlDsa44.keyPairFromSeed(FIXTURE_MLDSA_SEED);
@@ -576,22 +498,15 @@ describe('ML_DSA_44 through the signer pipeline', () => {
         expect(signed.pq_auth_sig).toHaveLength(1);
     });
 
-    it('verifyPQTransaction validates the ML_DSA_44 branch and derives its address', async () => {
+    it('pqRecover recovers the ML_DSA_44 signer of a freshly signed transaction', async () => {
         const signed = await tronWeb.trx.multiSign(clonePlainTx() as Transaction, signer);
-        const result = verifyPQTransaction(signed, { txCheck });
-        expect(result.valid).toBe(true);
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.entries[0].scheme).toBe('ML_DSA_44');
-        expect(result.entries[0].addressHex).toBe(MlDsa44.getAddress(signer.publicKey).hex);
+        expect(signed.pq_auth_sig[0].scheme).toBe('ML_DSA_44');
+        expect(Trx.pqRecover(signed)).toEqual([MlDsa44.getAddress(signer.publicKey).base58]);
     });
 
     it('a mixed Falcon + ML_DSA_44 transaction verifies and recovers both signers', async () => {
         const signed = await tronWeb.trx.multiSign(cloneTx() as Transaction, signer);
-        expect(signed.pq_auth_sig).toHaveLength(2);
-        const result = verifyPQTransaction(signed, { txCheck });
-        expect(result.valid).toBe(true);
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.entries.map((e) => e.scheme)).toEqual(['FN_DSA_512', 'ML_DSA_44']);
+        expect(signed.pq_auth_sig.map((e) => e.scheme)).toEqual(['FN_DSA_512', 'ML_DSA_44']);
         const addresses = Trx.pqRecover(signed);
         expect(addresses).toHaveLength(2);
         expect(addresses[1]).toBe(signer.address);
@@ -651,202 +566,20 @@ describe('isSchemeEnabled / assertSchemeEnabled', () => {
     });
 });
 
-describe('verifyPQTransaction payload binding (txIdMatchesPayload)', () => {
+describe('Trx.pqRecover binds the txID to the payload', () => {
     // PQ signatures sign the txID and nothing else: without binding the txID
     // back to the payload, a transaction whose raw_data was swapped underneath
-    // an intact txID would still verify.
-    it('flags a swapped payload when txCheck is injected', () => {
+    // an intact, correctly signed txID would still name its signer.
+    it('refuses a swapped decoded raw_data', () => {
         const tx = cloneTx();
         (tx.raw_data.contract[0].parameter.value as { amount: number }).amount = 999999999;
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.txIdMatchesPayload).toBe(false);
-        expect(result.valid).toBe(false);
+        expect(() => Trx.pqRecover(tx)).toThrow('Invalid transaction');
     });
 
-    it('binds the untampered fixture with txCheck', () => {
-        const result = verifyPQTransaction(cloneTx(), { txCheck });
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.valid).toBe(true);
-    });
-
-    it('reports null — never true — when raw_data is present but txCheck is not', () => {
-        const result = verifyPQTransaction(cloneTx());
-        expect(result.txIdMatchesPayload).toBe(null);
-        // A decoded raw_data is present and unproven: the signatures alone
-        // must not surface as a `valid` the caller would act on.
-        expect(result.valid).toBe(false);
-        expect(result.entries.every((e) => e.valid)).toBe(true);
-    });
-
-    it('binds via raw_data_hex alone when no decoded raw_data rides along', () => {
-        const { txID, raw_data_hex, pq_auth_sig } = cloneTx();
-        expect(verifyPQTransaction({ txID, raw_data_hex, pq_auth_sig }).txIdMatchesPayload).toBe(true);
-        const tampered = raw_data_hex.slice(0, -2) + (raw_data_hex.endsWith('00') ? '01' : '00');
-        const result = verifyPQTransaction({ txID, raw_data_hex: tampered, pq_auth_sig });
-        expect(result.txIdMatchesPayload).toBe(false);
-        expect(result.valid).toBe(false);
-    });
-
-    it('accepts an uppercase 0X prefix on txID and raw_data_hex, like 0x', () => {
-        const { txID, raw_data_hex, pq_auth_sig } = cloneTx();
-        const result = verifyPQTransaction({ txID: '0X' + txID, raw_data_hex: '0X' + raw_data_hex.toUpperCase(), pq_auth_sig });
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.valid).toBe(true);
-    });
-
-    it('reports null with nothing to bind against', () => {
-        const { txID, pq_auth_sig } = cloneTx();
-        const result = verifyPQTransaction({ txID, pq_auth_sig });
-        expect(result.txIdMatchesPayload).toBe(null);
-        expect(result.valid).toBe(true);
-    });
-
-    // `txCheck` is not a total function: it dereferences raw_data/raw_data_hex
-    // and models only part of the contract-type space, so it throws on inputs
-    // it cannot re-encode. A throw means "could not check", NOT "check
-    // failed" — grading it `false` would force valid:false on a good
-    // transaction and make the documented `{ txCheck }` option worse than
-    // omitting it.
-    it('falls back to the raw_data_hex binding when txCheck cannot run', () => {
-        const { txID, raw_data_hex, pq_auth_sig } = cloneTx();
-        const result = verifyPQTransaction({ txID, raw_data_hex, pq_auth_sig }, { txCheck });
-        expect(result.txIdMatchesPayload).toBe(true);
-        expect(result.valid).toBe(true);
-    });
-
-    it('grades null when txCheck cannot run and nothing else can bind', () => {
-        const { txID, raw_data, pq_auth_sig } = cloneTx();
-        const withRawDataOnly = verifyPQTransaction({ txID, raw_data, pq_auth_sig }, { txCheck });
-        expect(withRawDataOnly.txIdMatchesPayload).toBe(null);
-        expect(withRawDataOnly.valid).toBe(false); // raw_data present, binding unproven
-
-        const withNoPayload = verifyPQTransaction({ txID, pq_auth_sig }, { txCheck });
-        expect(withNoPayload.txIdMatchesPayload).toBe(null);
-        expect(withNoPayload.valid).toBe(true); // nothing present to be misled by
-    });
-
-    it('injecting txCheck is never worse than omitting it', () => {
-        const { txID, raw_data, raw_data_hex, pq_auth_sig } = cloneTx();
-        const shapes = [
-            { txID, raw_data, raw_data_hex, pq_auth_sig },
-            { txID, raw_data_hex, pq_auth_sig },
-            { txID, raw_data, pq_auth_sig },
-            { txID, pq_auth_sig },
-        ];
-        for (const shape of shapes) {
-            const injected = verifyPQTransaction(shape, { txCheck });
-            const plain = verifyPQTransaction(shape);
-            // These are all genuinely valid transactions: neither call may
-            // grade the binding as disproved, every signature verifies, and
-            // injecting txCheck can only raise the verdict — it is what
-            // proves a raw_data binding.
-            expect(injected.txIdMatchesPayload).not.toBe(false);
-            expect(plain.txIdMatchesPayload).not.toBe(false);
-            expect(injected.entries.every((e) => e.valid)).toBe(true);
-            if (plain.valid) expect(injected.valid).toBe(true);
-        }
-        // With both payload forms present, txCheck is what proves the binding.
-        expect(verifyPQTransaction(shapes[0], { txCheck }).valid).toBe(true);
-        expect(verifyPQTransaction(shapes[0]).valid).toBe(false);
-    });
-
-    it('does not grade valid when tampered raw_data makes txCheck throw', () => {
-        // PQ signatures sign the txID only. An attacker who keeps the signed
-        // txID/raw_data_hex intact but swaps the decoded raw_data — and adds
-        // a field txCheck cannot encode, so it throws instead of disagreeing
-        // — must not end up with a `valid: true` a caller would render.
+    it('refuses a tampered raw_data_hex', () => {
         const tx = cloneTx();
-        (tx.raw_data.contract[0].parameter.value as { amount: number }).amount = 999999999;
-        (tx.raw_data as { expiration: unknown }).expiration = 'soon';
-        expect(() => txCheck(tx)).toThrow();
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.txIdMatchesPayload).toBe(null);
-        expect(result.valid).toBe(false);
-        expect(result.entries.every((e) => e.valid)).toBe(true);
-    });
-
-    it('still reports false when txCheck runs and genuinely disagrees', () => {
-        const tx = cloneTx();
-        (tx.raw_data.contract[0].parameter.value as { amount: number }).amount = 999999999;
-        const result = verifyPQTransaction(tx, { txCheck });
-        expect(result.txIdMatchesPayload).toBe(false);
-        expect(result.valid).toBe(false);
-    });
-});
-
-describe('verifyPQTransaction grades a snapshot of its input', () => {
-    // A getter or Proxy could otherwise show one value to the signature check
-    // and another to the payload binding or to address derivation. The
-    // snapshot reads every property exactly once.
-    const throwaway = FnDsa512.keyPairFromSeed('55'.repeat(48));
-    const other = FnDsa512.keyPairFromSeed('66'.repeat(48));
-
-    it('reads txID once, so a getter cannot bind the payload to a txID nobody signed', () => {
-        const real = cloneTx();
-        const decoy = 'bb'.repeat(32);
-        const entry = {
-            scheme: 'FN_DSA_512' as const,
-            public_key: throwaway.publicKey,
-            signature: FnDsa512.sign(decoy, throwaway.privateKey),
-        };
-        let reads = 0;
-        const hostile = {
-            raw_data: real.raw_data,
-            raw_data_hex: real.raw_data_hex,
-            pq_auth_sig: [entry],
-            get txID() {
-                return reads++ === 0 ? decoy : real.txID;
-            },
-        };
-        const result = verifyPQTransaction(hostile as never, { txCheck });
-        expect(reads).toBe(1);
-        expect(result.valid).toBe(false);
-    });
-
-    it('reads public_key once, so addressHex always belongs to the key that verified', () => {
-        const digest = cloneTx().txID;
-        const signature = FnDsa512.sign(digest, throwaway.privateKey);
-        let reads = 0;
-        const entry = {
-            scheme: 'FN_DSA_512',
-            signature,
-            get public_key() {
-                return reads++ === 0 ? throwaway.publicKey : other.publicKey;
-            },
-        };
-        const result = verifyPQTransaction({ txID: digest, pq_auth_sig: [entry as never] });
-        expect(reads).toBe(1);
-        expect(result.entries[0].valid).toBe(true);
-        expect(result.entries[0].addressHex).toBe(throwaway.address.hex);
-        expect(result.valid).toBe(true);
-    });
-
-    it('never throws: missing, non-object and non-plain input grade valid:false with an error', () => {
-        for (const input of [undefined, null, 'tx', 42]) {
-            const result = verifyPQTransaction(input as never);
-            expect(result.valid).toBe(false);
-            expect(result.entries).toEqual([]);
-            expect(result.error).toMatch(/Invalid transaction provided/);
-        }
-        const txID = cloneTx().txID;
-        const withFunction = { txID, pq_auth_sig: [{ scheme: 'FN_DSA_512', public_key: 'ab', signature: 'cd', sign() {} }] };
-        expect(verifyPQTransaction(withFunction as never).valid).toBe(false);
-        const throwing = {
-            txID,
-            get pq_auth_sig(): never {
-                throw new Error('boom');
-            },
-        };
-        const result = verifyPQTransaction(throwing as never);
-        expect(result.valid).toBe(false);
-        expect(result.error).toBe('boom');
-    });
-
-    it("does not mutate the caller's object", () => {
-        const tx = cloneTx();
-        const before = JSON.stringify(tx);
-        verifyPQTransaction(tx, { txCheck });
-        expect(JSON.stringify(tx)).toBe(before);
+        tx.raw_data_hex = tx.raw_data_hex.slice(0, -2) + (tx.raw_data_hex.endsWith('00') ? '01' : '00');
+        expect(() => Trx.pqRecover(tx)).toThrow('Invalid transaction');
     });
 });
 

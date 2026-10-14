@@ -134,13 +134,13 @@ Anything you do should be explorable on https://nile.tronscan.org
 
 This fork adds opt-in support for TRON's post-quantum signature schemes: **FN_DSA_512** (Falcon-512), activated on Nile, and **ML_DSA_44** (ML-DSA-44 / FIPS 204), implemented but not yet activated on any public TRON network. PQ signatures travel in the transaction's `pq_auth_sig` field alongside (or instead of) `signature`; the signing digest is the unchanged 32-byte `txID`, so `raw_data_hex` and `txID` derivation are untouched.
 
-Key generation, signing, `createPQSigner` and offline `verifyPQTransaction` live in a separate `tronweb/pq` entry point. Signature verification is also built into the main entry — `Trx.pqRecover` carries a fixed table of the two schemes' verifiers — so `tronweb` itself loads `@noble/post-quantum` whether or not `tronweb/pq` is imported (this sets the Node.js floor below). Otherwise the main entry behaves like upstream at runtime — see the [CHANGELOG](CHANGELOG.md) for one type-level difference (`BlockHeader.witness_signature` is now optional).
+Key generation, signing and `createPQSigner` live in a separate `tronweb/pq` entry point. Signature verification is also built into the main entry — `Trx.pqRecover` carries a fixed table of the two schemes' verifiers — so `tronweb` itself loads `@noble/post-quantum` whether or not `tronweb/pq` is imported (this sets the Node.js floor below). Otherwise the main entry behaves like upstream at runtime — see the [CHANGELOG](CHANGELOG.md) for one type-level difference (`BlockHeader.witness_signature` is now optional).
 
 ### Quick start
 
 ```javascript
 import { TronWeb } from 'tronweb';
-import { FnDsa512, createPQSigner, assertSchemeEnabled, verifyPQTransaction } from 'tronweb/pq';
+import { FnDsa512, createPQSigner, assertSchemeEnabled } from 'tronweb/pq';
 
 const tronWeb = new TronWeb({ fullHost: 'https://nile.trongrid.io' });
 
@@ -169,11 +169,10 @@ const transaction = await tronWeb.transactionBuilder.sendTrx(
 // 5. Sign it — the PQ signature lands in `pq_auth_sig`, not `signature`
 const signedTransaction = await tronWeb.trx.signPQ(transaction, signer);
 
-// 6. (Optional) verify locally before broadcasting
-const verdict = verifyPQTransaction(signedTransaction, {
-    txCheck: tronWeb.utils.transaction.txCheck,
-});
-console.log(verdict.valid, verdict.txIdMatchesPayload); // true true
+// 6. (Optional) verify locally before broadcasting: pqRecover checks the
+//    signature against the txID and the txID against the payload, and throws
+//    if either fails
+console.log(tronWeb.trx.pqRecover(signedTransaction)); // [ key.address.base58 ]
 
 // 7. Broadcast
 const receipt = await tronWeb.trx.sendRawTransaction(signedTransaction);
@@ -187,12 +186,11 @@ console.log(receipt.result, receipt.transaction.txID);
 - `trx.sign(transaction, signer)` and `trx.multiSign(transaction, signer, permissionId)` accept a `TronPQSigner` object wherever they accept a private-key string. Mixed ECDSA + PQ multisig is supported — weights sum against the same permission threshold (verified end-to-end on a local private network; exercising it on Nile is part of the QA pass).
 - `trx.signPQ(transaction, signer, multisig?)` is a dedicated, strictly-typed entry point for the same path: a private-key string here is a compile-time and runtime error, so a PQ call site can never silently fall back to ECDSA.
 - `trx.sendRawTransaction()` broadcasts pure-PQ transactions (no `signature` field at all).
-- `Trx.pqRecover(transaction)` is the PQ counterpart of `ecRecover`: it verifies every `pq_auth_sig` entry against the `txID` and returns the signers' base58 addresses in entry order, ignoring ECDSA `signature` entries. PQ schemes have no `ecrecover` primitive, so recovery is a verification — the public key travels with the signature and is only turned into an address once the signature checks out against it and the `txID`; a tampered entry throws (naming its position and scheme) instead of naming its public key's address. A `pq_auth_sig` list longer than `PQ_MAX_TOTAL_SIGNATURES` (5) is refused before any entry is verified, with the same error text as `verifyPQTransaction` — recovery stops at the first failing entry, but one valid entry repeated fills a list of any length, and each entry costs a full PQ verify on the caller's thread (ECDSA `signature` entries are not counted against the cap). The verifiers are built into the main entry (a fixed table of the two supported schemes), so `pqRecover` works without importing `tronweb/pq` — and in an ESM/CJS dual-package install, where `require('tronweb')` and `import 'tronweb/pq'` load separate copies of the package, there is no registration step for one copy to miss. `verifyPQTransaction` is the non-throwing form with per-entry verdicts. `Trx.ecRecover()` recovers ECDSA signers only: on a mixed ECDSA + PQ transaction it returns the ECDSA signers and leaves the PQ co-signers out (it cannot verify them, and an unverified address next to recovered ones would let a forged `pq_auth_sig` entry pass as a signer); on a pure-PQ transaction it throws, pointing to `pqRecover`.
+- `Trx.pqRecover(transaction)` is the PQ counterpart of `ecRecover`: it verifies every `pq_auth_sig` entry against the `txID` and returns the signers' base58 addresses in entry order, ignoring ECDSA `signature` entries. PQ schemes have no `ecrecover` primitive, so recovery is a verification — the public key travels with the signature and is only turned into an address once the signature checks out against it and the `txID`; a tampered entry throws (naming its position and scheme) instead of naming its public key's address. A `pq_auth_sig` list longer than `PQ_MAX_TOTAL_SIGNATURES` (5) is refused before any entry is verified — recovery stops at the first failing entry, but one valid entry repeated fills a list of any length, and each entry costs a full PQ verify on the caller's thread (ECDSA `signature` entries are not counted against the cap). The verifiers are built into the main entry (a fixed table of the two supported schemes), so `pqRecover` works without importing `tronweb/pq` — and in an ESM/CJS dual-package install, where `require('tronweb')` and `import 'tronweb/pq'` load separate copies of the package, there is no registration step for one copy to miss. `Trx.ecRecover()` recovers ECDSA signers only: on a mixed ECDSA + PQ transaction it returns the ECDSA signers and leaves the PQ co-signers out (it cannot verify them, and an unverified address next to recovered ones would let a forged `pq_auth_sig` entry pass as a signer); on a pure-PQ transaction it throws, pointing to `pqRecover`.
 - The `tronweb/pq` module exports:
   - `FnDsa512` and `MlDsa44` — stateless crypto modules: `generateKeyPair()`, `keyPairFromSeed()`, `keyPairFromPrivateKey()`, `sign()`, `verify()`, `getAddress()`, plus size constants.
   - `createPQSigner({ scheme, privateKey, publicKey?, address? })` — builds a local `TronPQSigner`. The key is validated and the address derived eagerly, so a corrupt or wrong-length key fails at construction, not at sign time. An optional `publicKey` and `address` are verified against what the private key derives — the checks java-tron runs on its witness key file — so a `localPqWitness` key file that carries `privateKey` can be passed as-is (a seed-only file is refused with a named error: persist the expanded key), and a misassembled one fails here rather than signing as the wrong account.
   - `isTronPQSigner()`, `isSchemeEnabled()` / `assertSchemeEnabled()` (capability detection via `wallet/getchainparameters`), `PQ_CHAIN_PARAM_KEYS`, `PQ_PUBLIC_KEY_SIZES`, `PQ_MAX_TOTAL_SIGNATURES` (the node's cap on `signature` + `pq_auth_sig` combined, 5).
-  - `verifyPQTransaction(transaction, options?)` — offline verification of every `pq_auth_sig` entry against the `txID`, with per-entry results. The verdict also grades whether the `txID` belongs to the transaction's payload (`txIdMatchesPayload`: `true` / `false` / `null`) — PQ signatures sign only the txID, so this binding matters. `raw_data_hex` is checked automatically; binding a decoded `raw_data` needs the full re-encode check, injected as `{ txCheck: tronWeb.utils.transaction.txCheck }`. Passing `txCheck` is always safe: on a payload shape it cannot re-encode it grades the binding *uncheckable* (`null`, falling back to the `raw_data_hex` check) rather than disproved, so only a check that ran and disagreed yields `false`. While a decoded `raw_data` is present, `valid` requires that binding to be proven (`txIdMatchesPayload === true`) — verifying a full transaction object without `txCheck` grades `valid: false`, with the per-signature results still reported in `entries`.
 
 A `TronPQSigner` is just `{ scheme, address, publicKey, signDigest(digest) }`, so hardware wallets and remote signers can implement it without exposing key material. `sign` / `multiSign` read those fields once and validate them against each other before anything is signed — a known scheme, a public key of the scheme's exact size, and an `address` that really derives from `publicKey` — and build the entry from that snapshot, not from the live object after `signDigest` resolved. A misconfigured signer (say, another account's address over this key, which would pass the owner check and sign as the wrong key) or one that rewrites itself mid-signing therefore fails locally with a named `Invalid PQ signer` error instead of producing a transaction the node rejects.
 
@@ -252,15 +250,15 @@ const receipt = await tronWeb.trx.sendRawTransaction(signed);
 
 ### Not supported
 
-- **Browser `<script>` / CDN builds.** `dist/TronWeb.js` carries the signature verifiers — `Trx.pqRecover` works from it — but no key generation, signing or `verifyPQTransaction`: those are only available from Node.js or a bundler via the `tronweb/pq` subpath.
+- **Browser `<script>` / CDN builds.** `dist/TronWeb.js` carries the signature verifiers — `Trx.pqRecover` works from it — but no key generation or signing: those are only available from Node.js or a bundler via the `tronweb/pq` subpath.
 - **`options.privateKey` on convenience methods.** `trx.sendTrx` / `sendToken` / `freezeBalance` etc. accept only a private-key *string*; PQ private keys are 2176/2560 bytes and do not fit that API. Build the transaction with `transactionBuilder`, then `signPQ` + `sendRawTransaction`, as in the quick start.
 - **Message signing.** `signMessage` / `signMessageV2` are ECDSA-only; passing a `TronPQSigner` to `trx.sign(message, ...)` throws — the PQ protocol only covers transaction signatures.
 - **Altering a PQ-signed transaction.** `transactionBuilder.alterTransaction` / `extendExpiration` refuse transactions carrying `pq_auth_sig` — changing `raw_data` would change the `txID` and silently invalidate the signature.
-- **`ecRecover` on PQ signatures.** Recovers ECDSA signers only: a mixed transaction yields its ECDSA signers without the PQ co-signers, and a pure-PQ transaction throws. Use `Trx.pqRecover` for the PQ signers (it verifies each entry; no `tronweb/pq` import is needed) or `verifyPQTransaction`.
+- **`ecRecover` on PQ signatures.** Recovers ECDSA signers only: a mixed transaction yields its ECDSA signers without the PQ co-signers, and a pure-PQ transaction throws. Use `Trx.pqRecover` for the PQ signers (it verifies each entry; no `tronweb/pq` import is needed).
 
 ### Testing
 
-From a clone of this repository (the installed package ships no tests), `npm run test:pq` runs the PQ suite offline — 128 tests, no node required — including byte-level verification of the transactions in `test/fixtures/pq-onchain-transactions.json`: five `FN_DSA_512` and three `ML_DSA_44` transfers that a PQ-enabled java-tron node accepted and executed, signed by throwaway keys derived from trivial seeds (no real account is involved — see `test/pq/onchainFixtures.ts` for their provenance and the seeds).
+From a clone of this repository (the installed package ships no tests), `npm run test:pq` runs the PQ suite offline — 110 tests, no node required — including byte-level verification of the transactions in `test/fixtures/pq-onchain-transactions.json`: five `FN_DSA_512` and three `ML_DSA_44` transfers that a PQ-enabled java-tron node accepted and executed, signed by throwaway keys derived from trivial seeds (no real account is involved — see `test/pq/onchainFixtures.ts` for their provenance and the seeds).
 
 The same command also runs a node-backed suite, `test/pq/onchain.test.ts`, when pointed at a PQ-enabled node with both schemes active. It signs, broadcasts and confirms real Falcon, ML-DSA and mixed ECDSA + PQ multisig transactions, and checks that the node rejects malformed `pq_auth_sig` entries. It spends funds and installs a permission, so run it against a private network only, never Nile or mainnet:
 

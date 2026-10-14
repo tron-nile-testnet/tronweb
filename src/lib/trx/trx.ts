@@ -69,8 +69,8 @@ export class Trx extends AbstractTrx<false> {
      * or forged, so listing such an address beside recovered ones — without
      * the verification this ECDSA path does not perform — would let a
      * tampered entry pass as a signer. For the PQ co-signers use `pqRecover`,
-     * which verifies each entry, or `verifyPQTransaction` from `tronweb/pq`.
-     * A pure-PQ transaction has nothing to recover here and throws.
+     * which verifies each entry. A pure-PQ transaction has nothing to recover
+     * here and throws.
      */
     static ecRecover(transaction: SignedTransaction): Address | Address[] {
         const tx = cloneTransaction(transaction);
@@ -109,17 +109,16 @@ export class Trx extends AbstractTrx<false> {
      * `ecRecover` covers those.
      *
      * A `pq_auth_sig` list longer than `PQ_MAX_TOTAL_SIGNATURES` is refused
-     * before any entry is verified, as `verifyPQTransaction` does: recovery
-     * stops at the first entry that fails, but one valid entry repeated
-     * fills a list of any length, and every entry costs a full PQ verify on
-     * the caller's thread. ECDSA entries are not counted against the cap.
+     * before any entry is verified: recovery stops at the first entry that
+     * fails, but one valid entry repeated fills a list of any length, and
+     * every entry costs a full PQ verify on the caller's thread. ECDSA
+     * entries are not counted against the cap.
      *
      * The verifiers are built in (`utils/pqVerifier.ts`, a fixed table of
      * the supported schemes), so this works from the main entry alone —
      * including in an ESM/CJS dual-package install, where an import of
      * `tronweb/pq` lands in a different copy of the package than the `Trx`
-     * the application holds. `verifyPQTransaction` from `tronweb/pq` is the
-     * non-throwing form with per-entry verdicts.
+     * the application holds.
      */
     static pqRecover(transaction: PQSignedTransaction): Address[] {
         const tx = cloneTransaction(transaction);
@@ -135,8 +134,8 @@ export class Trx extends AbstractTrx<false> {
         // is never admitted. Mirror that much, ahead of every per-entry step:
         // the loop below stops at the first entry that fails, but one valid
         // entry repeated fills a list of any length, and each entry costs a
-        // full PQ verify. Same message as verifyPQTransaction. ECDSA entries
-        // are not counted (this recovers PQ signers, not node admission).
+        // full PQ verify. ECDSA entries are not counted (this recovers PQ
+        // signers, not node admission).
         if (tx.pq_auth_sig.length > PQ_MAX_TOTAL_SIGNATURES) {
             throw new Error(
                 `too many pq_auth_sig entries: ${tx.pq_auth_sig.length} exceeds the node limit of ${PQ_MAX_TOTAL_SIGNATURES}`
