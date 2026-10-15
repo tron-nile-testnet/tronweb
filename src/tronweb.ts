@@ -22,10 +22,11 @@ const DEFAULT_VERSION = '4.8.2';
 
 const FEE_LIMIT = 150000000;
 
-// Kept as the plain release version on purpose: plugin gating runs
-// `semver.satisfies(TronWeb.version, requires)`, and a prerelease build
-// number (see package.json during QA rounds) would fail every `^6.x`
-// range a plugin declares.
+// Kept as the plain upstream release version on purpose: plugin gating runs
+// `semver.satisfies(TronWeb.version, requires)`. package.json carries this
+// fork's build as `+pq-nile.N` build metadata, which semver ignores when
+// comparing, so both answer `6.5.1` to the `^6.x` range a plugin declares;
+// a prerelease tag would fail it.
 const version = '6.5.1';
 
 function isValidOptions(options: unknown): options is TronWebOptions {

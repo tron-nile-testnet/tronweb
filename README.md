@@ -34,7 +34,7 @@
 > npm install github:tron-nile-testnet/tronweb#pq_sig
 > ```
 >
-> Any branch, tag or commit works as the `#ref`. The package name stays `tronweb`, so it lands in `node_modules/tronweb` as a drop-in replacement for the upstream library (current version: `6.5.1-pq-nile.0`). See [Post-Quantum Signatures (Nile)](#post-quantum-signatures-nile) for the full guide.
+> Any branch, tag or commit works as the `#ref`. The package name stays `tronweb`, so it lands in `node_modules/tronweb` as a drop-in replacement for the upstream library (current version: `6.5.1+pq-nile.0`). See [Post-Quantum Signatures (Nile)](#post-quantum-signatures-nile) for the full guide.
 
 ## What is TronWeb?
 
@@ -65,7 +65,7 @@ You can also ship TronWeb in a Chrome extension.
 
 ## Recent History
 
-For recent history, see the [CHANGELOG](CHANGELOG.md) — the `6.5.1-pq-nile.0` entry lists this fork's changes; the entries below it are inherited from upstream. You can check it out for:
+For recent history, see the [CHANGELOG](CHANGELOG.md) — the `6.5.1+pq-nile.0` entry lists this fork's changes; the entries below it are inherited from upstream. You can check it out for:
 - New features
 - Dependencies update
 - Bug fix
@@ -88,7 +88,7 @@ npm clones the repository at that ref, installs its build dependencies and runs 
 Each [release](https://github.com/tron-nile-testnet/tronweb/releases) attaches the packed package, `tronweb-<version>.tgz` — the output of `npm pack`, with `lib/` and `dist/` already built. Install it by path or by URL; no build, git or install scripts are involved:
 
 ```bash
-npm install ./tronweb-6.5.1-pq-nile.0.tgz
+npm install ./tronweb-6.5.1+pq-nile.0.tgz
 npm install https://github.com/tron-nile-testnet/tronweb/releases/download/<tag>/tronweb-<version>.tgz
 ```
 
@@ -99,14 +99,14 @@ Do **not** install the release page's auto-generated *Source code* archives (`.z
 ```bash
 git clone --branch pq_sig https://github.com/tron-nile-testnet/tronweb.git
 cd tronweb && npm install        # runs prepare: builds lib/ and dist/ (npm run build:all rebuilds after changes)
-npm pack                         # → tronweb-6.5.1-pq-nile.0.tgz, install it as above
+npm pack                         # → tronweb-6.5.1+pq-nile.0.tgz, install it as above
 ```
 
 To use the clone directly from another project, `npm install /path/to/tronweb` (a symlink into `node_modules/tronweb`) or `npm link` — requiring the clone by filesystem path does not reach the `tronweb/pq` subpath export.
 
 ### Checking what you installed
 
-Read `node_modules/tronweb/package.json` (`"version": "6.5.1-pq-nile.0"`; for a git-ref install `npm ls tronweb` also shows the resolved commit). `TronWeb.version` reports the plain upstream base `6.5.1` on purpose: plugin version gating uses `semver.satisfies`, which a prerelease tag would break.
+Read `node_modules/tronweb/package.json` (`"version": "6.5.1+pq-nile.0"`; for a git-ref install `npm ls tronweb` also shows the resolved commit). The version is the upstream base, `6.5.1`, plus `+pq-nile.N` build metadata counting this fork's builds on that base. semver ignores build metadata when comparing, so the package satisfies every `^6.x` range and peer dependency exactly as upstream `6.5.1` does — a prerelease tag such as `6.5.1-pq-nile.0` would not, and npm refuses such an install with `ERESOLVE` as soon as any dependency declares `tronweb` as a peer. The flip side is that two fork builds are equal to semver: order them by git tag or by the CHANGELOG, not by version. `TronWeb.version` reports the plain `6.5.1` for the same reason — plugin version gating uses `semver.satisfies`.
 
 ### Browser
 

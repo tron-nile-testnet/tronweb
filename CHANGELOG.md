@@ -1,7 +1,7 @@
 Change Log
 =========
 
-__6.5.1-pq-nile.0__
+__6.5.1+pq-nile.0__
 
 ## New Features
 
