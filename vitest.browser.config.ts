@@ -79,11 +79,13 @@ export default defineConfig({
             'test/utils/typedData.test.ts',
             // Uses disk-utils (fs/path/zlib) to load test fixtures — Node-only APIs
             'test/utils/address.test.ts',
-            // Load the on-chain PQ fixture via node:fs — Node-only. The
-            // fixture-free PQ suite (test/pq/mlDsa44.test.ts) stays in, so the
-            // PQ crypto itself is still exercised in the browser run.
+            // Load the on-chain PQ fixture via node:fs (test/pq/onchainFixtures.ts)
+            // — Node-only. The fixture-free PQ suites (test/pq/mlDsa44.test.ts,
+            // test/pq/pqVerifier.test.ts) stay in, so the PQ crypto and the
+            // core's verifier table are still exercised in the browser run.
             'test/pq/fnDsa512.test.ts',
             'test/pq/signer.test.ts',
+            'test/pq/pqRecoverCore.test.ts',
             // Node-backed PQ suite: talks to a PQ-enabled node, writes fixtures.
             'test/pq/onchain.test.ts',
             // Fixture-heavy integration suite (deploys a contract, issues tokens,
