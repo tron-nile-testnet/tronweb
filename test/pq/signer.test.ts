@@ -576,6 +576,23 @@ describe('isSchemeEnabled / assertSchemeEnabled', () => {
         ).resolves.toBeUndefined();
         await expect(assertSchemeEnabled(nodeWith([]), 'ML_DSA_44')).rejects.toThrow(/getAllowMlDsa44/);
     });
+
+    it('rejects an unknown scheme by name, before asking the node', async () => {
+        let asked = false;
+        const node = { trx: { getChainParameters: async () => ((asked = true), []) } };
+        const unknown = /Unsupported PQ scheme: NOPE; expected one of FN_DSA_512, ML_DSA_44/;
+        await expect(isSchemeEnabled(node, 'NOPE' as never)).rejects.toThrow(unknown);
+        // A typo is a programming error, not a network state: the assert must
+        // not read as "NOPE is not activated (chain parameter undefined is unset)".
+        const err: Error = await assertSchemeEnabled(node, 'NOPE' as never).catch((e) => e);
+        expect(err.message).toMatch(unknown);
+        expect(err.message).not.toMatch(/undefined|not activated/);
+        expect(asked).toBe(false);
+    });
+
+    it('does not take an inherited Object property for a scheme', async () => {
+        await expect(isSchemeEnabled(nodeWith([]), 'toString' as never)).rejects.toThrow(/Unsupported PQ scheme: toString/);
+    });
 });
 
 describe('Trx.pqRecover binds the txID to the payload', () => {
